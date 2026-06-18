@@ -1,6 +1,6 @@
 """
-Аники v2.1 — ИИ-ассистент Билли Херрингтона
-Точка входа: VAD, аватар, чат, трей, напоминания.
+Аники v2.2 — точка входа.
+FIX: авто-установка зависимостей, нормальное закрытие (крест = выход).
 """
 
 import sys
@@ -19,40 +19,31 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-
 logger = logging.getLogger("aniki.main")
 os.makedirs(os.path.join(os.path.dirname(__file__), "data"), exist_ok=True)
 
 
-def check_dependencies() -> list:
-    missing = []
-    for pkg in ("PyQt6", "requests"):
-        try:
-            __import__(pkg.replace("-", "_").split(">=")[0])
-        except ImportError:
-            missing.append(pkg)
-    return missing
-
-
-def show_dependency_error(missing: list):
-    print(f"ОШИБКА: не установлены пакеты: {', '.join(missing)}")
-    try:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk(); root.withdraw()
-        messagebox.showerror(
-            "Аники — Ошибка",
-            f"Не установлены:\n{chr(10).join(missing)}\n\n"
-            "Запусти setup.bat для установки.",
-        )
-    except Exception:
-        pass
-
-
 def main():
-    missing = check_dependencies()
-    if missing:
-        show_dependency_error(missing)
+    # ── Шаг 1: авто-установка зависимостей ───────────────────────────────────
+    try:
+        import auto_setup
+        auto_setup.run(progress_cb=lambda msg: print(f"  {msg}"))
+        auto_setup.ensure_ollama_autostart()
+    except Exception as e:
+        print(f"auto_setup: {e}")
+
+    # ── Шаг 2: проверить PyQt6 ────────────────────────────────────────────────
+    try:
+        from PyQt6.QtWidgets import QApplication
+    except ImportError:
+        print("ОШИБКА: PyQt6 не установлен. Запусти setup.bat.")
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk(); root.withdraw()
+            messagebox.showerror("Аники", "PyQt6 не установлен.\nЗапусти setup.bat.")
+        except Exception:
+            pass
         sys.exit(1)
 
     from PyQt6.QtWidgets import QApplication, QSplashScreen, QLabel
@@ -61,7 +52,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Аники")
-    app.setApplicationVersion("2.1.0")
+    app.setApplicationVersion("2.2.0")
 
     # Сплэш
     pix = QPixmap(440, 230)
@@ -70,10 +61,8 @@ def main():
     lbl = QLabel(splash)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setGeometry(0, 0, 440, 230)
-    lbl.setStyleSheet(
-        "color:#ff9e44; font-size:24px; font-weight:bold; font-family:'Segoe UI';"
-    )
-    lbl.setText("АНИКИ\nAre you ready?\nЗагружаюсь...")
+    lbl.setStyleSheet("color:#ff9e44;font-size:24px;font-weight:bold;font-family:'Segoe UI';")
+    lbl.setText("АНИКИ v2.2\nAre you ready?\nЗагружаюсь...")
     splash.show()
     app.processEvents()
 
@@ -85,43 +74,42 @@ def main():
         )
         app.processEvents()
 
-    logger.info("Аники v2.1 запускается...")
+    logger.info("Аники v2.2 запускается...")
 
-    # База данных
     splash_msg("Инициализация памяти...")
     from core.memory import init_db
     init_db()
 
-    # Ollama
     splash_msg("Проверка Ollama...")
     from core.ai_engine import AnikiAI, check_ollama_available
     ai_engine = AnikiAI()
     ollama_ok = check_ollama_available()
     if not ollama_ok:
+        # Пробуем автозапуск
+        try:
+            from ollama_setup import start_ollama
+            splash_msg("Запускаю Ollama...")
+            ollama_ok = start_ollama()
+        except Exception:
+            pass
+    if not ollama_ok:
         logger.warning("Ollama не запущен — ИИ недоступен")
 
-    # TTS предзагрузка
-    splash_msg("Загрузка голоса Silero (aidar)...")
+    splash_msg("Загрузка голоса Billie (aidar)...")
     from core.tts import preload as tts_preload
     threading.Thread(target=tts_preload, daemon=True).start()
 
-    # STT предзагрузка (Whisper)
     splash_msg("Загрузка Whisper STT...")
     from core.speech import load_whisper_model, is_available as stt_ok
     stt_available = stt_ok()
     if stt_available:
         threading.Thread(target=load_whisper_model, daemon=True).start()
     else:
-        logger.warning("STT (faster-whisper) недоступен — VAD отключён")
+        logger.warning("STT недоступен — VAD отключён")
 
-    # Интерфейс
     splash_msg("Запуск интерфейса...")
     from ui.chat_window import ChatWindow
     from core.reminders import ReminderSystem
-
-    chat_window  = None
-    tray_app     = None
-    avatar_overlay = None
 
     def on_reminder(title: str, message: str):
         if chat_window:
@@ -142,13 +130,13 @@ def main():
         stt_enabled=stt_available,
     )
 
-    # Аватар Билли Херрингтона
-    splash_msg("Запуск аватара...")
+    # Аватар Билли
+    splash_msg("Запуск аватара Билли...")
+    avatar_overlay = None
     try:
         from ui.avatar_overlay import AvatarOverlay
         avatar_overlay = AvatarOverlay()
         avatar_overlay.show()
-
         chat_window.avatar_thinking.connect(avatar_overlay.set_thinking)
         chat_window.avatar_speaking.connect(avatar_overlay.set_speaking)
         chat_window.avatar_listening.connect(avatar_overlay.set_listening)
@@ -174,38 +162,54 @@ def main():
     if not QSystemTrayIcon.isSystemTrayAvailable():
         logger.warning("Системный трей недоступен")
 
-    app.setQuitOnLastWindowClosed(False)
+    # FIX: крест ЗАКРЫВАЕТ приложение (не сворачивает)
+    # Пользователь может выбрать поведение в настройках
+    app.setQuitOnLastWindowClosed(False)   # управляем вручную
 
-    def close_to_tray(event):
-        event.ignore()
-        chat_window.hide()
-        if tray_app:
-            tray_app.show_notification(
-                "Аники",
-                "Я в трее! Кликни на аватар Билли или иконку в трее.",
-            )
+    def closeEvent(event):
+        """
+        FIX: спрашиваем что делать при закрытии.
+        Можно убрать диалог и всегда выходить — раскомментируй второй вариант.
+        """
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            chat_window,
+            "Аники",
+            "Свернуть в трей или выйти?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+        )
+        # Yes = Свернуть, No = Выйти, Cancel = Отмена
+        if reply == QMessageBox.StandardButton.Yes:
+            event.ignore()
+            chat_window.hide()
+            tray_app.show_notification("Аники", "Я в трее! Кликни на аватар Билли.")
+        elif reply == QMessageBox.StandardButton.No:
+            event.accept()
+            # Полный выход
+            if avatar_overlay:
+                avatar_overlay.close()
+            tray_app.quit()
+        else:
+            event.ignore()
 
-    chat_window.closeEvent = close_to_tray
+    chat_window.closeEvent = closeEvent
 
     QTimer.singleShot(1800, splash.close)
 
     if not ollama_ok:
         QTimer.singleShot(2200, lambda: chat_window.add_bot_message(
             "Бро, Ollama не запущен!\n\n"
-            "Для работы ИИ:\n"
             "1. Установи Ollama: https://ollama.com\n"
             "2. В cmd: ollama run mistral\n"
-            "3. Перезапусти Аники\n\n"
-            "Let's go — всё будет работать!"
+            "3. Перезапусти Аники\n\nLet's go — всё будет работать!"
         ))
-
     if not stt_available:
         QTimer.singleShot(2500, lambda: chat_window.add_bot_message(
             "VAD недоступен (faster-whisper не установлен).\n"
             "Голосовое управление отключено — пиши текстом."
         ))
 
-    logger.info("Аники v2.1 запущен! Are you ready?")
+    logger.info("Аники v2.2 запущен! Are you ready?")
     sys.exit(tray_app.run())
 
 
