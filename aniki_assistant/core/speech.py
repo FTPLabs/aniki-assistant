@@ -95,8 +95,13 @@ def transcribe_audio_bytes(audio_bytes: bytes,
 
 
 def transcribe_audio_file(path: str) -> Optional[str]:
+    # FIX C1: проверяем результат загрузки — _whisper_model может быть None
     if not _whisper_loaded:
-        load_whisper_model()
+        if not load_whisper_model():
+            logger.error('Whisper не загружен — transcribe_audio_file невозможен')
+            return None
+    if _whisper_model is None:
+        return None
     try:
         segments, info = _whisper_model.transcribe(
             path, language=None, task="transcribe",
