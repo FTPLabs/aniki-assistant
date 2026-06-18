@@ -1,16 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec — Аники v2.0
+# PyInstaller spec — Аники v2.3
+# FIX M2: убран устаревший block_cipher (PyInstaller 6.x)
+# FIX C2: collect_all встроен прямо в spec — torch/torchaudio/silero/ctranslate2/faster_whisper
 
 import os
+from PyInstaller.utils.hooks import collect_all
+
+# ── Сборка torch (Silero TTS работает только если torch полностью включён) ──
+torch_datas,    torch_bins,    torch_hidden    = collect_all('torch')
+torchaudio_datas, torchaudio_bins, torchaudio_hidden = collect_all('torchaudio')
+fwhisper_datas, fwhisper_bins, fwhisper_hidden = collect_all('faster_whisper')
+ct2_datas,      ct2_bins,      ct2_hidden      = collect_all('ctranslate2')
+sd_datas,       sd_bins,       sd_hidden       = collect_all('sounddevice')
 
 a = Analysis(
     ['main.py'],
     pathex=['.'],
-    binaries=[],
+    binaries=[] + torch_bins + torchaudio_bins + fwhisper_bins + ct2_bins + sd_bins,
     datas=[
         ('resources', 'resources'),
-        ('data', 'data'),
-    ],
+        ('data',      'data'),
+    ] + torch_datas + torchaudio_datas + fwhisper_datas + ct2_datas + sd_datas,
     hiddenimports=[
         'PyQt6.QtCore',
         'PyQt6.QtWidgets',
@@ -31,21 +41,25 @@ a = Analysis(
         'pyttsx3',
         'pyttsx3.drivers',
         'pyttsx3.drivers.sapi5',
-        'pywin32',
+        'win32api',
         'win32com.client',
         'psutil',
+        'webrtcvad',
+        'pyaudio',
+        'PIL',
+        'PIL.ImageGrab',
         'urllib.request',
         'urllib.parse',
         'json',
         're',
-    ],
+    ] + torch_hidden + torchaudio_hidden + fwhisper_hidden + ct2_hidden + sd_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
-        noarchive=False,
+    noarchive=False,
 )
 
 pyz = PYZ(a.pure, a.zipped_data)
