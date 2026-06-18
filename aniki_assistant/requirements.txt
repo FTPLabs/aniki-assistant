@@ -1,4 +1,4 @@
-# Аники v2.1 — зависимости
+# Аники v2.2 — зависимости
 # Установка: pip install -r requirements.txt
 
 # GUI
@@ -7,12 +7,16 @@ PyQt6>=6.6.0
 # HTTP запросы к Ollama
 requests>=2.31.0
 
-# Голосовой синтез (TTS) — мужской голос Silero aidar, офлайн
+# Голосовой синтез (TTS) — Silero aidar, офлайн
 torch>=2.1.0
 torchaudio>=2.1.0
 sounddevice>=0.4.6
+soundfile>=0.12.1
 
-# Распознавание речи (STT) — офлайн через faster-whisper
+# Голосовые клипы (опционально)
+pygame>=2.5.0
+
+# Распознавание речи (STT) — офлайн
 faster-whisper>=1.0.0
 
 # VAD — определение голосовой активности
@@ -22,13 +26,13 @@ webrtcvad>=2.0.10
 numpy>=1.24.0
 pyaudio>=0.2.13
 
-# Windows системный контроль (звук, приложения)
+# Windows системный контроль
 pycaw>=20230412
 comtypes>=1.2.0
 pywin32>=306
 
-# Запасной TTS (если Silero недоступен)
+# Запасной TTS
 pyttsx3>=2.90
 
-# Системные утилиты
+# Утилиты
 psutil>=5.9.0
