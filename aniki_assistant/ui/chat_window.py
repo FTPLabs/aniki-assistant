@@ -423,7 +423,8 @@ if PYQT_AVAILABLE:
             self.stt_check = QCheckBox("Голосовое управление (VAD)")
             self.stt_check.setChecked(self.stt_enabled)
             self.stt_check.setStyleSheet("color:white;font-size:13px;")
-            self.stt_check.toggled.connect(self._toggle_vad)
+            # FIX M1: синхронизируем кнопку mic при изменении чекбокса VAD
+            self.stt_check.toggled.connect(self._toggle_vad_from_settings)
             form.addRow(self.stt_check)
             self.avatar_check = QCheckBox("Показывать аватар Билли на экране")
             self.avatar_check.setChecked(True)
@@ -523,9 +524,10 @@ if PYQT_AVAILABLE:
         def _speak_sentence_async(self, sentence: str):
             """Воспроизводит предложение в фоне (стриминг TTS)."""
             self.avatar_speaking.emit(True)
-            from core.tts import _do_speak, _preprocess_text
+            # FIX H2: используем публичный API speak() вместо приватных _do_speak/_preprocess_text
+            from core.tts import speak
             def _do():
-                _do_speak(_preprocess_text(sentence))
+                speak(sentence)
             threading.Thread(target=_do, daemon=True).start()
 
         def _on_done(self, full_text: str):
@@ -581,8 +583,19 @@ if PYQT_AVAILABLE:
             else:
                 self._stop_vad()
 
+        def _toggle_vad_from_settings(self, enabled: bool):
+            # FIX M1: синхронизируем визуальное состояние кнопки mic с чекбоксом
+            self.mic_btn.blockSignals(True)
+            self.mic_btn.setChecked(enabled)
+            self.mic_btn.blockSignals(False)
+            self._toggle_vad(enabled)
+
         def _on_voice_text(self, text: str):
             if not text:
+                return
+            # FIX H1: не запускаем новый AIWorker если предыдущий ещё работает
+            if self._worker and self._worker.isRunning():
+                logger.debug("VAD: игнорируем ввод — ИИ ещё отвечает")
                 return
             self.input_field.setText(text)
             self.add_user_message(text)
