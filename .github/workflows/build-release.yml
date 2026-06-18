@@ -1,0 +1,167 @@
+name: Build Aniki Windows EXE Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install core dependencies
+        working-directory: aniki_assistant
+        run: |
+          python -m pip install --upgrade pip
+          pip install PyQt6 requests pyttsx3 psutil pywin32
+
+      - name: Install PyTorch CPU
+        working-directory: aniki_assistant
+        run: |
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install audio & speech dependencies
+        working-directory: aniki_assistant
+        run: |
+          pip install faster-whisper sounddevice numpy
+          pip install pycaw comtypes
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller==6.9.0
+
+      - name: Create resources directory and placeholder icon
+        working-directory: aniki_assistant
+        run: |
+          if not exist resources mkdir resources
+          python create_icon.py
+        shell: cmd
+
+      - name: Create data directory
+        working-directory: aniki_assistant
+        run: |
+          if not exist data mkdir data
+        shell: cmd
+
+      - name: Build EXE with PyInstaller
+        working-directory: aniki_assistant
+        run: |
+          pyinstaller ^
+            --name "Aniki" ^
+            --onedir ^
+            --windowed ^
+            --add-data "resources;resources" ^
+            --add-data "data;data" ^
+            --hidden-import "PyQt6.QtCore" ^
+            --hidden-import "PyQt6.QtWidgets" ^
+            --hidden-import "PyQt6.QtGui" ^
+            --hidden-import "PyQt6.sip" ^
+            --hidden-import "pycaw.pycaw" ^
+            --hidden-import "comtypes" ^
+            --hidden-import "comtypes.client" ^
+            --hidden-import "sounddevice" ^
+            --hidden-import "faster_whisper" ^
+            --hidden-import "sqlite3" ^
+            --hidden-import "torch" ^
+            --hidden-import "torchaudio" ^
+            --hidden-import "numpy" ^
+            --hidden-import "requests" ^
+            --hidden-import "pyttsx3" ^
+            --hidden-import "pyttsx3.drivers" ^
+            --hidden-import "pyttsx3.drivers.sapi5" ^
+            --hidden-import "win32com.client" ^
+            --hidden-import "psutil" ^
+            --collect-all "faster_whisper" ^
+            --collect-all "ctranslate2" ^
+            --noconfirm ^
+            main.py
+        shell: cmd
+
+      - name: Verify build output
+        working-directory: aniki_assistant
+        run: |
+          dir dist\Aniki\
+          echo "Build successful!"
+        shell: cmd
+
+      - name: Create installer ZIP
+        working-directory: aniki_assistant
+        run: |
+          Compress-Archive -Path dist\Aniki\* -DestinationPath dist\Aniki-Windows-x64.zip
+          Get-Item dist\Aniki-Windows-x64.zip | Select-Object Name, Length
+        shell: powershell
+
+      - name: Get version
+        id: get_version
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            echo "VERSION=${{ github.event.inputs.version }}" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "VERSION=${{ github.ref_name }}" >> $env:GITHUB_OUTPUT
+          }
+        shell: powershell
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          name: "🤜 Аники ${{ steps.get_version.outputs.VERSION }} — Windows EXE"
+          body: |
+            ## 🤜 Аники — ИИ-ассистент Билли Херрингтона
+
+            > *"Are you ready? Let's go!"*
+
+            ### 📦 Что в релизе
+            - **Aniki-Windows-x64.zip** — полный пакет с .exe для Windows 10/11 (x64)
+
+            ### 🚀 Как установить
+            1. Скачай `Aniki-Windows-x64.zip`
+            2. Распакуй в любую папку
+            3. Установи [Ollama](https://ollama.com) и запусти: `ollama run mistral`
+            4. Запусти `Aniki.exe`
+
+            ### ✨ Возможности
+            - 💬 ИИ-чат на русском с гачимучи-фразами (локальный Ollama)
+            - 🎤 Офлайн распознавание речи (faster-whisper)
+            - 🔊 Нейросетевой TTS на русском (Silero)
+            - 🖥️ Системные команды: звук, браузер, Discord, Steam, YouTube
+            - 💾 Память о пользователе (SQLite)
+            - ⏰ Умные напоминания: вода, перерывы, игровое время
+            - 🔔 Системный трей — работает в фоне
+
+            ### 🛠️ Требования
+            - Windows 10/11 x64
+            - [Ollama](https://ollama.com) (для ИИ-функций)
+            - 8GB RAM рекомендуется
+            - ~4GB свободного места (модель Mistral)
+
+            ### ⚠️ Первый запуск
+            Может показать предупреждение SmartScreen — нажми **"Подробнее"** → **"Выполнить"**
+
+            ---
+            *Wrestle with the best, die like the rest!* 🤜
+          files: |
+            aniki_assistant/dist/Aniki-Windows-x64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
