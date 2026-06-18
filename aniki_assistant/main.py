@@ -29,6 +29,8 @@ def main():
         import auto_setup
         auto_setup.run(progress_cb=lambda msg: print(f"  {msg}"))
         auto_setup.ensure_ollama_autostart()
+        # Скачать голос Билли в фоне (не блокирует запуск)
+        auto_setup.download_billy_voice(background=True)
     except Exception as e:
         print(f"auto_setup: {e}")
 
