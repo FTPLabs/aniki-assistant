@@ -1,5 +1,5 @@
 """
-Аники — ИИ-ассистент Билли Херрингтон
+Аники — ИИ-ассистент Билли Херрингтона
 Главная точка входа
 """
 
@@ -14,18 +14,18 @@ logging.basicConfig(
     handlers=[
         logging.FileHandler(
             os.path.join(os.path.dirname(__file__), "data", "aniki.log"),
-            encoding="utf-8"
+            encoding="utf-8",
         ),
         logging.StreamHandler(sys.stdout),
-    ]
+    ],
 )
 
 logger = logging.getLogger("aniki.main")
 
 os.makedirs(os.path.join(os.path.dirname(__file__), "data"), exist_ok=True)
 
+
 def check_dependencies() -> list[str]:
-    """Проверить наличие зависимостей."""
     missing = []
     try:
         import PyQt6
@@ -39,10 +39,8 @@ def check_dependencies() -> list[str]:
 
 
 def show_dependency_error(missing: list[str]):
-    """Показать ошибку зависимостей."""
     print(f"ОШИБКА: Не установлены пакеты: {', '.join(missing)}")
     print("Запусти: pip install " + " ".join(missing))
-
     try:
         import tkinter as tk
         from tkinter import messagebox
@@ -51,14 +49,13 @@ def show_dependency_error(missing: list[str]):
         messagebox.showerror(
             "Аники — Ошибка запуска",
             f"Не установлены пакеты:\n{chr(10).join(missing)}\n\n"
-            f"Запусти setup.bat для установки зависимостей!"
+            "Запусти setup.bat для установки зависимостей!",
         )
     except Exception:
         pass
 
 
 def main():
-    """Точка входа приложения."""
     missing = check_dependencies()
     if missing:
         show_dependency_error(missing)
@@ -70,56 +67,74 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Аники")
-    app.setApplicationVersion("1.0.0")
+    app.setApplicationVersion("2.0.0")
 
-    splash_pixmap = QPixmap(400, 200)
-    splash_pixmap.fill(QColor("#1a1a2e"))
+    # Сплэш экран
+    splash_pixmap = QPixmap(420, 220)
+    splash_pixmap.fill(QColor("#0d0d1e"))
     splash = QSplashScreen(splash_pixmap)
-    splash_label = QLabel(splash)
-    splash_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    splash_label.setGeometry(0, 0, 400, 200)
-    splash_label.setStyleSheet("color: #ff9e44; font-size: 28px; font-weight: bold;")
-    splash_label.setText("🤜 Аники загружается...\nAre you ready?")
+    lbl = QLabel(splash)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lbl.setGeometry(0, 0, 420, 220)
+    lbl.setStyleSheet(
+        "color: #ff9e44; font-size: 26px; font-weight: bold; font-family: 'Segoe UI';"
+    )
+    lbl.setText("АНИКИ\nAre you ready?\nЗагружаюсь...")
     splash.show()
     app.processEvents()
 
-    logger.info("Инициализация Аники...")
+    logger.info("Инициализация Аники v2.0...")
 
-    splash.showMessage("Инициализация памяти...", alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, color=QColor("#888"))
+    # База данных
+    splash.showMessage(
+        "Инициализация памяти...",
+        alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
+        color=QColor("#888"),
+    )
     app.processEvents()
-
     from core.memory import init_db
     init_db()
-    logger.info("База данных инициализирована")
 
-    splash.showMessage("Проверка Ollama...", alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, color=QColor("#888"))
+    # Проверка Ollama
+    splash.showMessage(
+        "Проверка Ollama...",
+        alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
+        color=QColor("#888"),
+    )
     app.processEvents()
-
     from core.ai_engine import AnikiAI, check_ollama_available
     ai_engine = AnikiAI()
     ollama_ok = check_ollama_available()
-
     if not ollama_ok:
         logger.warning("Ollama не запущен — ИИ-функции недоступны")
 
-    splash.showMessage("Загрузка TTS...", alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, color=QColor("#888"))
+    # TTS предзагрузка
+    splash.showMessage(
+        "Загрузка голоса (Silero)...",
+        alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
+        color=QColor("#888"),
+    )
     app.processEvents()
-
     from core.tts import preload as tts_preload
-    tts_thread = threading.Thread(target=tts_preload, daemon=True)
-    tts_thread.start()
+    threading.Thread(target=tts_preload, daemon=True).start()
 
-    splash.showMessage("Запуск интерфейса...", alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, color=QColor("#888"))
+    # Интерфейс
+    splash.showMessage(
+        "Запуск интерфейса...",
+        alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
+        color=QColor("#888"),
+    )
     app.processEvents()
 
     from ui.chat_window import ChatWindow
     from core.reminders import ReminderSystem
 
+    tray_app = None
+    chat_window = None
+
     def on_reminder(title: str, message: str):
-        """Callback для напоминаний."""
         if chat_window:
             chat_window.show_reminder_notification(title, message)
-        from ui.tray import TrayApp
         if tray_app and tray_app.tray_icon:
             tray_app.show_notification(f"⏰ {title}", message)
 
@@ -127,8 +142,7 @@ def main():
     reminder_system.start()
 
     if ollama_ok:
-        init_thread = threading.Thread(target=ai_engine.initialize, daemon=True)
-        init_thread.start()
+        threading.Thread(target=ai_engine.initialize, daemon=True).start()
 
     chat_window = ChatWindow(
         ai_engine=ai_engine if ollama_ok else None,
@@ -137,6 +151,32 @@ def main():
         stt_enabled=False,
     )
 
+    # Аватар — плавающее окно поверх всего
+    avatar_overlay = None
+    try:
+        from ui.avatar_overlay import AvatarOverlay
+        avatar_overlay = AvatarOverlay()
+        avatar_overlay.show()
+
+        # Подключаем сигналы чата к аватару
+        chat_window.avatar_thinking.connect(avatar_overlay.set_thinking)
+        chat_window.avatar_speaking.connect(avatar_overlay.set_speaking)
+
+        # Клик на аватар — показать/скрыть чат
+        def _toggle_chat():
+            if chat_window.isVisible():
+                chat_window.hide()
+            else:
+                chat_window.show()
+                chat_window.raise_()
+                chat_window.activateWindow()
+
+        avatar_overlay.toggle_main.connect(_toggle_chat)
+        logger.info("Аватар-оверлей запущен")
+    except Exception as e:
+        logger.warning(f"Аватар недоступен: {e}")
+
+    # Трей
     from ui.tray import TrayApp
     tray_app = TrayApp(chat_window=chat_window)
 
@@ -146,35 +186,30 @@ def main():
 
     app.setQuitOnLastWindowClosed(False)
 
-    def on_close_to_tray():
-        """Скрыть окно в трей при закрытии."""
-        chat_window.hide()
-        tray_app.show_notification(
-            "Аники",
-            "Я в трее! Are you ready? Кликни на иконку чтобы открыть меня."
-        )
-
-    original_close = chat_window.closeEvent
-
-    def close_event(event):
+    def close_to_tray(event):
         event.ignore()
-        on_close_to_tray()
+        chat_window.hide()
+        if tray_app:
+            tray_app.show_notification(
+                "Аники",
+                "Я в трее! Кликни на иконку или на аватар чтобы открыть меня. Are you ready?",
+            )
 
-    chat_window.closeEvent = close_event
+    chat_window.closeEvent = close_to_tray
 
-    QTimer.singleShot(1500, splash.close)
+    QTimer.singleShot(1600, splash.close)
 
     if not ollama_ok:
         QTimer.singleShot(2000, lambda: chat_window.add_bot_message(
-            "⚠️ Бро, Ollama не запущен!\n\n"
-            "Для работы ИИ:\n"
+            "Бро, Ollama не запущен!\n\n"
+            "Для полноценного ИИ:\n"
             "1. Установи Ollama: https://ollama.com\n"
-            "2. Открой cmd и запусти: ollama run mistral\n"
+            "2. Открой cmd: ollama run mistral\n"
             "3. Перезапусти Аники\n\n"
             "Let's go — всё будет работать!"
         ))
 
-    logger.info("Аники запущен!")
+    logger.info("Аники v2.0 запущен! Are you ready?")
     sys.exit(tray_app.run())
 
 
