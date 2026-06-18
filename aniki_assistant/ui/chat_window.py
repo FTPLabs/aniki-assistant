@@ -1,5 +1,5 @@
 """
-Окно чата Аники — PyQt6 интерфейс.
+Окно чата Аники — PyQt6 интерфейс с поддержкой аватара и обучения.
 """
 
 import logging
@@ -30,19 +30,22 @@ except ImportError:
 
 
 if PYQT_AVAILABLE:
+
     class AIWorker(QThread):
         """Фоновый поток для запросов к ИИ."""
         response_chunk = pyqtSignal(str)
-        response_done = pyqtSignal(str)
-        error = pyqtSignal(str)
+        response_done  = pyqtSignal(str)
+        thinking_start = pyqtSignal()
+        error          = pyqtSignal(str)
 
         def __init__(self, ai_engine, message: str):
             super().__init__()
             self.ai_engine = ai_engine
-            self.message = message
+            self.message   = message
 
         def run(self):
             try:
+                self.thinking_start.emit()
                 full_response = ""
                 for chunk in self.ai_engine.chat_stream(self.message):
                     full_response += chunk
@@ -58,6 +61,7 @@ if PYQT_AVAILABLE:
         def __init__(self, text: str, is_user: bool = False, parent=None):
             super().__init__(parent)
             self.is_user = is_user
+            self._text_label: Optional[QLabel] = None
             self._setup_ui(text)
 
         def _setup_ui(self, text: str):
@@ -65,35 +69,31 @@ if PYQT_AVAILABLE:
             layout.setContentsMargins(8, 4, 8, 4)
 
             bubble = QFrame()
-            bubble.setMaximumWidth(500)
+            bubble.setMaximumWidth(520)
 
             bubble_layout = QVBoxLayout(bubble)
             bubble_layout.setContentsMargins(12, 8, 12, 8)
             bubble_layout.setSpacing(2)
 
-            sender_label = QLabel("Ты" if self.is_user else "🤜 Аники")
-            sender_font = QFont()
-            sender_font.setPointSize(8)
+            sender_label = QLabel("Ты" if self.is_user else "Аники")
+            sender_font = QFont("Segoe UI", 8)
             sender_font.setBold(True)
             sender_label.setFont(sender_font)
 
-            text_label = QLabel(text)
-            text_label.setWordWrap(True)
-            text_label.setTextInteractionFlags(
+            self._text_label = QLabel(text)
+            self._text_label.setWordWrap(True)
+            self._text_label.setTextInteractionFlags(
                 Qt.TextInteractionFlag.TextSelectableByMouse
             )
-
-            text_font = QFont()
-            text_font.setPointSize(10)
-            text_label.setFont(text_font)
+            text_font = QFont("Segoe UI", 11)
+            self._text_label.setFont(text_font)
 
             time_label = QLabel(datetime.now().strftime("%H:%M"))
-            time_font = QFont()
-            time_font.setPointSize(7)
+            time_font = QFont("Segoe UI", 7)
             time_label.setFont(time_font)
 
             bubble_layout.addWidget(sender_label)
-            bubble_layout.addWidget(text_label)
+            bubble_layout.addWidget(self._text_label)
             bubble_layout.addWidget(time_label)
 
             if self.is_user:
@@ -102,7 +102,7 @@ if PYQT_AVAILABLE:
                 bubble.setStyleSheet("""
                     QFrame {
                         background-color: #1a4a8a;
-                        border-radius: 12px;
+                        border-radius: 14px;
                         border-bottom-right-radius: 3px;
                     }
                 """)
@@ -110,16 +110,20 @@ if PYQT_AVAILABLE:
                 layout.addWidget(bubble)
             else:
                 sender_label.setStyleSheet("color: #ff9e44;")
-                time_label.setStyleSheet("color: #888;")
+                time_label.setStyleSheet("color: #666;")
                 bubble.setStyleSheet("""
                     QFrame {
-                        background-color: #2a2a3e;
-                        border-radius: 12px;
+                        background-color: #1e1e32;
+                        border-radius: 14px;
                         border-bottom-left-radius: 3px;
                     }
                 """)
                 layout.addWidget(bubble)
                 layout.addSpacerItem(QSpacerItem(40, 0, QSizePolicy.Policy.Expanding))
+
+        def update_text(self, text: str):
+            if self._text_label:
+                self._text_label.setText(text)
 
 
     class ReminderDialog(QDialog):
@@ -133,7 +137,6 @@ if PYQT_AVAILABLE:
 
         def _setup_ui(self):
             layout = QVBoxLayout(self)
-
             form = QFormLayout()
 
             self.title_input = QLineEdit()
@@ -163,7 +166,6 @@ if PYQT_AVAILABLE:
             form.addRow("", self.datetime_edit)
 
             layout.addLayout(form)
-
             buttons = QDialogButtonBox(
                 QDialogButtonBox.StandardButton.Ok |
                 QDialogButtonBox.StandardButton.Cancel
@@ -175,9 +177,7 @@ if PYQT_AVAILABLE:
         def get_data(self) -> dict:
             dt = None
             if self.datetime_check.isChecked():
-                qdt = self.datetime_edit.dateTime()
-                dt = qdt.toPyDateTime()
-
+                dt = self.datetime_edit.dateTime().toPyDateTime()
             return {
                 "title": self.title_input.text(),
                 "description": self.desc_input.toPlainText(),
@@ -189,7 +189,10 @@ if PYQT_AVAILABLE:
     class ChatWindow(QWidget):
         """Главное окно чата."""
 
-        message_sent = pyqtSignal(str)
+        message_sent    = pyqtSignal(str)
+        # сигналы для аватара
+        avatar_thinking = pyqtSignal(bool)
+        avatar_speaking = pyqtSignal(bool)
 
         def __init__(
             self,
@@ -199,69 +202,74 @@ if PYQT_AVAILABLE:
             stt_enabled: bool = False,
         ):
             super().__init__()
-            self.ai_engine = ai_engine
+            self.ai_engine       = ai_engine
             self.reminder_system = reminder_system
-            self.tts_enabled = tts_enabled
-            self.stt_enabled = stt_enabled
+            self.tts_enabled     = tts_enabled
+            self.stt_enabled     = stt_enabled
             self._current_bot_bubble: Optional[MessageBubble] = None
             self._current_bot_text = ""
             self._worker: Optional[AIWorker] = None
             self._setup_ui()
             self._apply_dark_theme()
 
+        # ── UI setup ─────────────────────────────────────────────────
+
         def _setup_ui(self):
-            self.setWindowTitle("🤜 Аники — ИИ-ассистент")
-            self.setMinimumSize(650, 700)
-            self.resize(750, 800)
+            self.setWindowTitle("Аники — ИИ-ассистент")
+            self.setMinimumSize(680, 720)
+            self.resize(760, 820)
 
             main_layout = QVBoxLayout(self)
             main_layout.setContentsMargins(0, 0, 0, 0)
             main_layout.setSpacing(0)
 
-            header = QFrame()
-            header.setFixedHeight(60)
-            header.setStyleSheet("background-color: #1a1a2e; border-bottom: 1px solid #2a2a4e;")
-            header_layout = QHBoxLayout(header)
-
-            title_label = QLabel("🤜 АНИКИ")
-            title_font = QFont()
-            title_font.setPointSize(16)
-            title_font.setBold(True)
-            title_label.setFont(title_font)
-            title_label.setStyleSheet("color: #ff9e44;")
-
-            self.status_label = QLabel("● Онлайн")
-            self.status_label.setStyleSheet("color: #44ff88; font-size: 11px;")
-
-            header_layout.addWidget(title_label)
-            header_layout.addStretch()
-            header_layout.addWidget(self.status_label)
-
-            self.tabs = QTabWidget()
-            self.tabs.setStyleSheet("""
-                QTabWidget::pane { border: none; }
-                QTabBar::tab { 
-                    background: #1a1a2e; color: #888; 
-                    padding: 8px 16px; border: none;
-                }
-                QTabBar::tab:selected { 
-                    background: #0d0d1e; color: #ff9e44; 
-                    border-bottom: 2px solid #ff9e44;
-                }
-            """)
-
-            chat_widget = self._create_chat_tab()
-            reminders_widget = self._create_reminders_tab()
-            settings_widget = self._create_settings_tab()
-
-            self.tabs.addTab(chat_widget, "💬 Чат")
-            self.tabs.addTab(reminders_widget, "⏰ Напоминания")
-            self.tabs.addTab(settings_widget, "⚙️ Настройки")
+            header = self._build_header()
+            self.tabs = self._build_tabs()
 
             main_layout.addWidget(header)
             main_layout.addWidget(self.tabs)
 
             self._add_welcome_message()
+
+        def _build_header(self) -> QFrame:
+            header = QFrame()
+            header.setFixedHeight(60)
+            header.setStyleSheet("background-color: #12122a; border-bottom: 1px solid #2a2a4e;")
+            lay = QHBoxLayout(header)
+
+            title = QLabel("  АНИКИ")
+            f = QFont("Segoe UI", 17)
+            f.setBold(True)
+            title.setFont(f)
+            title.setStyleSheet("color: #ff9e44; letter-spacing: 2px;")
+
+            self.status_label = QLabel("● Онлайн")
+            self.status_label.setStyleSheet("color: #44ff88; font-size: 11px;")
+
+            lay.addWidget(title)
+            lay.addStretch()
+            lay.addWidget(self.status_label)
+            return header
+
+        def _build_tabs(self) -> QTabWidget:
+            tabs = QTabWidget()
+            tabs.setStyleSheet("""
+                QTabWidget::pane { border: none; }
+                QTabBar::tab {
+                    background: #12122a; color: #666;
+                    padding: 9px 18px; border: none;
+                    font-family: 'Segoe UI'; font-size: 12px;
+                }
+                QTabBar::tab:selected {
+                    background: #0d0d1e; color: #ff9e44;
+                    border-bottom: 2px solid #ff9e44;
+                }
+                QTabBar::tab:hover { color: #ccc; }
+            """)
+            tabs.addTab(self._create_chat_tab(),      "  Чат  ")
+            tabs.addTab(self._create_reminders_tab(), "  Напоминания  ")
+            tabs.addTab(self._create_settings_tab(),  "  Настройки  ")
+            return tabs
 
         def _create_chat_tab(self) -> QWidget:
             widget = QWidget()
@@ -278,111 +286,79 @@ if PYQT_AVAILABLE:
             self.messages_widget.setStyleSheet("background-color: #0d0d1e;")
             self.messages_layout = QVBoxLayout(self.messages_widget)
             self.messages_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-            self.messages_layout.setSpacing(4)
-            self.messages_layout.setContentsMargins(8, 8, 8, 8)
-
+            self.messages_layout.setSpacing(6)
+            self.messages_layout.setContentsMargins(10, 10, 10, 10)
             self.scroll_area.setWidget(self.messages_widget)
 
             input_frame = QFrame()
             input_frame.setStyleSheet("""
-                QFrame { 
-                    background-color: #1a1a2e; 
-                    border-top: 1px solid #2a2a4e;
-                }
+                QFrame { background-color: #12122a; border-top: 1px solid #2a2a4e; }
             """)
-            input_frame.setFixedHeight(70)
-            input_layout = QHBoxLayout(input_frame)
-            input_layout.setContentsMargins(12, 10, 12, 10)
+            input_frame.setFixedHeight(72)
+            input_lay = QHBoxLayout(input_frame)
+            input_lay.setContentsMargins(14, 12, 14, 12)
 
             self.input_field = QLineEdit()
             self.input_field.setPlaceholderText("Напиши Аники что-нибудь...")
             self.input_field.setStyleSheet("""
                 QLineEdit {
-                    background-color: #2a2a3e;
+                    background-color: #1e1e32;
                     border: 1px solid #3a3a5e;
-                    border-radius: 20px;
-                    padding: 8px 16px;
+                    border-radius: 22px;
+                    padding: 10px 18px;
                     color: white;
                     font-size: 13px;
+                    font-family: 'Segoe UI';
                 }
-                QLineEdit:focus {
-                    border: 1px solid #ff9e44;
-                }
+                QLineEdit:focus { border: 1px solid #ff9e44; }
             """)
             self.input_field.returnPressed.connect(self._send_message)
 
             self.send_button = QPushButton("▶")
-            self.send_button.setFixedSize(44, 44)
+            self.send_button.setFixedSize(46, 46)
             self.send_button.setStyleSheet("""
                 QPushButton {
-                    background-color: #ff9e44;
-                    border-radius: 22px;
-                    color: #1a1a2e;
-                    font-size: 16px;
-                    font-weight: bold;
+                    background-color: #ff9e44; border-radius: 23px;
+                    color: #1a1a2e; font-size: 17px; font-weight: bold;
                 }
-                QPushButton:hover { background-color: #ffb344; }
+                QPushButton:hover   { background-color: #ffb344; }
                 QPushButton:pressed { background-color: #e08e34; }
-                QPushButton:disabled { background-color: #444; color: #888; }
+                QPushButton:disabled { background-color: #333; color: #666; }
             """)
             self.send_button.clicked.connect(self._send_message)
 
             self.mic_button = QPushButton("🎤")
-            self.mic_button.setFixedSize(44, 44)
+            self.mic_button.setFixedSize(46, 46)
             self.mic_button.setCheckable(True)
             self.mic_button.setStyleSheet("""
                 QPushButton {
-                    background-color: #2a2a3e;
-                    border-radius: 22px;
-                    font-size: 16px;
-                    border: 1px solid #3a3a5e;
+                    background-color: #1e1e32; border-radius: 23px;
+                    font-size: 17px; border: 1px solid #3a3a5e;
                 }
-                QPushButton:checked {
-                    background-color: #cc2244;
-                    border: 1px solid #ee2244;
-                }
-                QPushButton:hover { background-color: #3a3a5e; }
+                QPushButton:checked { background-color: #aa2233; border: 1px solid #cc2244; }
+                QPushButton:hover   { background-color: #2a2a4e; }
             """)
 
-            input_layout.addWidget(self.input_field)
-            input_layout.addWidget(self.mic_button)
-            input_layout.addWidget(self.send_button)
+            input_lay.addWidget(self.input_field)
+            input_lay.addWidget(self.mic_button)
+            input_lay.addWidget(self.send_button)
 
             layout.addWidget(self.scroll_area)
             layout.addWidget(input_frame)
-
             return widget
 
         def _create_reminders_tab(self) -> QWidget:
             widget = QWidget()
             layout = QVBoxLayout(widget)
-            layout.setContentsMargins(12, 12, 12, 12)
+            layout.setContentsMargins(14, 14, 14, 14)
 
             btn_layout = QHBoxLayout()
             add_btn = QPushButton("+ Добавить напоминание")
-            add_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #ff9e44;
-                    color: #1a1a2e;
-                    border-radius: 6px;
-                    padding: 8px 16px;
-                    font-weight: bold;
-                }
-                QPushButton:hover { background-color: #ffb344; }
-            """)
+            add_btn.setStyleSheet(self._btn_style_primary())
             add_btn.clicked.connect(self._add_reminder_dialog)
 
-            refresh_btn = QPushButton("🔄 Обновить")
-            refresh_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #2a2a3e;
-                    color: white;
-                    border-radius: 6px;
-                    padding: 8px 16px;
-                    border: 1px solid #3a3a5e;
-                }
-                QPushButton:hover { background-color: #3a3a5e; }
-            """)
+            refresh_btn = QPushButton("Обновить")
+            refresh_btn.setStyleSheet(self._btn_style_secondary())
             refresh_btn.clicked.connect(self._refresh_reminders)
 
             btn_layout.addWidget(add_btn)
@@ -392,117 +368,105 @@ if PYQT_AVAILABLE:
             self.reminders_list = QListWidget()
             self.reminders_list.setStyleSheet("""
                 QListWidget {
-                    background-color: #1a1a2e;
-                    border: 1px solid #2a2a4e;
-                    border-radius: 8px;
-                    color: white;
-                    font-size: 12px;
+                    background-color: #12122a; border: 1px solid #2a2a4e;
+                    border-radius: 8px; color: white; font-size: 12px;
                 }
-                QListWidget::item {
-                    padding: 10px;
-                    border-bottom: 1px solid #2a2a4e;
-                }
-                QListWidget::item:selected {
-                    background-color: #2a2a4e;
-                }
+                QListWidget::item { padding: 10px; border-bottom: 1px solid #2a2a4e; }
+                QListWidget::item:selected { background-color: #2a2a4e; }
             """)
 
             layout.addLayout(btn_layout)
             layout.addWidget(self.reminders_list)
-
             self._refresh_reminders()
             return widget
 
         def _create_settings_tab(self) -> QWidget:
             widget = QWidget()
             layout = QVBoxLayout(widget)
-            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setContentsMargins(20, 20, 20, 20)
 
             form = QFormLayout()
-            form.setSpacing(12)
+            form.setSpacing(14)
 
             self.tts_check = QCheckBox("Включить голосовые ответы (TTS)")
             self.tts_check.setChecked(self.tts_enabled)
             self.tts_check.setStyleSheet("color: white; font-size: 13px;")
             form.addRow(self.tts_check)
 
-            self.stt_check = QCheckBox("Включить распознавание речи (STT)")
+            self.stt_check = QCheckBox("Включить распознавание речи (STT — экспериментально)")
             self.stt_check.setChecked(self.stt_enabled)
             self.stt_check.setStyleSheet("color: white; font-size: 13px;")
             form.addRow(self.stt_check)
 
-            water_label = QLabel("Напоминание о воде (минуты):")
-            water_label.setStyleSheet("color: #aaa; font-size: 12px;")
-            self.water_spin = QSpinBox()
-            self.water_spin.setRange(15, 480)
-            self.water_spin.setValue(60)
-            self.water_spin.setStyleSheet("color: white; background: #2a2a3e; padding: 4px;")
-            form.addRow(water_label, self.water_spin)
+            self.avatar_check = QCheckBox("Показывать аватар Аники на экране")
+            self.avatar_check.setChecked(True)
+            self.avatar_check.setStyleSheet("color: white; font-size: 13px;")
+            form.addRow(self.avatar_check)
 
-            break_label = QLabel("Напоминание о перерыве (минуты):")
-            break_label.setStyleSheet("color: #aaa; font-size: 12px;")
-            self.break_spin = QSpinBox()
-            self.break_spin.setRange(30, 480)
-            self.break_spin.setValue(90)
-            self.break_spin.setStyleSheet("color: white; background: #2a2a3e; padding: 4px;")
-            form.addRow(break_label, self.break_spin)
-
-            gaming_label = QLabel("Предупреждение об игре (минуты):")
-            gaming_label.setStyleSheet("color: #aaa; font-size: 12px;")
-            self.gaming_spin = QSpinBox()
-            self.gaming_spin.setRange(30, 480)
-            self.gaming_spin.setValue(120)
-            self.gaming_spin.setStyleSheet("color: white; background: #2a2a3e; padding: 4px;")
-            form.addRow(gaming_label, self.gaming_spin)
+            for label_text, attr, lo, hi, val in [
+                ("Напоминание о воде (мин):",    "water_spin",  15, 480, 60),
+                ("Напоминание о перерыве (мин):", "break_spin",  30, 480, 90),
+                ("Предупреждение об игре (мин):", "gaming_spin", 30, 480, 120),
+            ]:
+                lbl = QLabel(label_text)
+                lbl.setStyleSheet("color: #aaa; font-size: 12px;")
+                spin = QSpinBox()
+                spin.setRange(lo, hi)
+                spin.setValue(val)
+                spin.setStyleSheet("color: white; background: #1e1e32; padding: 5px;")
+                setattr(self, attr, spin)
+                form.addRow(lbl, spin)
 
             save_btn = QPushButton("Сохранить настройки")
-            save_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #ff9e44;
-                    color: #1a1a2e;
-                    border-radius: 6px;
-                    padding: 10px 20px;
-                    font-weight: bold;
-                    font-size: 13px;
-                }
-                QPushButton:hover { background-color: #ffb344; }
-            """)
+            save_btn.setStyleSheet(self._btn_style_primary())
             save_btn.clicked.connect(self._save_settings)
 
             layout.addLayout(form)
             layout.addWidget(save_btn)
             layout.addStretch()
-
             return widget
+
+        # ── styling helpers ───────────────────────────────────────────
+
+        def _btn_style_primary(self) -> str:
+            return """
+                QPushButton {
+                    background-color: #ff9e44; color: #1a1a2e;
+                    border-radius: 7px; padding: 9px 20px;
+                    font-weight: bold; font-size: 13px; font-family: 'Segoe UI';
+                }
+                QPushButton:hover   { background-color: #ffb344; }
+                QPushButton:pressed { background-color: #e08e34; }
+            """
+
+        def _btn_style_secondary(self) -> str:
+            return """
+                QPushButton {
+                    background-color: #1e1e32; color: white;
+                    border-radius: 7px; padding: 9px 16px;
+                    border: 1px solid #3a3a5e; font-size: 12px;
+                }
+                QPushButton:hover { background-color: #2a2a4e; }
+            """
 
         def _apply_dark_theme(self):
             self.setStyleSheet("""
-                QWidget {
-                    background-color: #0d0d1e;
-                    color: white;
-                    font-family: 'Segoe UI', sans-serif;
-                }
-                QTabWidget {
-                    background-color: #0d0d1e;
-                }
+                QWidget { background-color: #0d0d1e; color: white; font-family: 'Segoe UI'; }
+                QTabWidget { background-color: #0d0d1e; }
                 QScrollBar:vertical {
-                    background: #1a1a2e;
-                    width: 8px;
-                    border-radius: 4px;
+                    background: #12122a; width: 7px; border-radius: 3px;
                 }
                 QScrollBar::handle:vertical {
-                    background: #3a3a5e;
-                    border-radius: 4px;
+                    background: #3a3a5e; border-radius: 3px;
                 }
-                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                    height: 0px;
-                }
+                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
             """)
+
+        # ── messages ──────────────────────────────────────────────────
 
         def _add_welcome_message(self):
             from core.personality import get_phrase
-            welcome = get_phrase("greeting")
-            self.add_bot_message(welcome)
+            self.add_bot_message(get_phrase("greeting"))
 
         def add_user_message(self, text: str):
             bubble = MessageBubble(text, is_user=True)
@@ -514,7 +478,7 @@ if PYQT_AVAILABLE:
             self.messages_layout.addWidget(bubble)
             self._scroll_to_bottom()
 
-        def start_streaming_bot_message(self) -> MessageBubble:
+        def start_streaming_bot_message(self) -> "MessageBubble":
             self._current_bot_text = ""
             self._current_bot_bubble = MessageBubble("...", is_user=False)
             self.messages_layout.addWidget(self._current_bot_bubble)
@@ -524,15 +488,13 @@ if PYQT_AVAILABLE:
         def append_stream_token(self, token: str):
             self._current_bot_text += token
             if self._current_bot_bubble:
-                for label in self._current_bot_bubble.findChildren(QLabel):
-                    if label.text() != "🤜 Аники" and not label.text().startswith("🤜"):
-                        try:
-                            if ":" not in label.text() or len(label.text()) > 10:
-                                label.setText(self._current_bot_text)
-                                break
-                        except Exception:
-                            pass
+                self._current_bot_bubble.update_text(self._current_bot_text)
             self._scroll_to_bottom()
+
+        def show_reminder_notification(self, title: str, message: str):
+            self.add_bot_message(f"Напоминание: {title}\n{message}")
+
+        # ── send / receive ────────────────────────────────────────────
 
         def _send_message(self):
             text = self.input_field.text().strip()
@@ -549,27 +511,34 @@ if PYQT_AVAILABLE:
             if self.ai_engine:
                 self.start_streaming_bot_message()
                 self._worker = AIWorker(self.ai_engine, text)
+                self._worker.thinking_start.connect(lambda: self.avatar_thinking.emit(True))
                 self._worker.response_chunk.connect(self.append_stream_token)
                 self._worker.response_done.connect(self._on_response_done)
                 self._worker.error.connect(self._on_response_error)
                 self._worker.start()
             else:
-                self.add_bot_message("ИИ не инициализирован. Проверь Ollama!")
+                self.add_bot_message(
+                    "Бро, ИИ не инициализирован. Проверь Ollama! "
+                    "Установи: https://ollama.com и запусти: ollama run mistral"
+                )
                 self._reset_input()
 
         def _on_response_done(self, full_text: str):
+            self.avatar_thinking.emit(False)
             self._reset_input()
             if self.tts_enabled and full_text:
-                from core.tts import speak
+                self.avatar_speaking.emit(True)
                 import threading
-                threading.Thread(
-                    target=speak,
-                    args=(full_text,),
-                    kwargs={"blocking": False},
-                    daemon=True
-                ).start()
+                from core.tts import speak
+
+                def _speak_and_stop():
+                    speak(full_text, blocking=True)
+                    self.avatar_speaking.emit(False)
+
+                threading.Thread(target=_speak_and_stop, daemon=True).start()
 
         def _on_response_error(self, error: str):
+            self.avatar_thinking.emit(False)
             self.add_bot_message(f"Ошибка: {error}")
             self._reset_input()
 
@@ -579,9 +548,11 @@ if PYQT_AVAILABLE:
             self.input_field.setFocus()
 
         def _scroll_to_bottom(self):
-            QTimer.singleShot(50, lambda: self.scroll_area.verticalScrollBar().setValue(
+            QTimer.singleShot(60, lambda: self.scroll_area.verticalScrollBar().setValue(
                 self.scroll_area.verticalScrollBar().maximum()
             ))
+
+        # ── reminders ─────────────────────────────────────────────────
 
         def _add_reminder_dialog(self):
             dialog = ReminderDialog(self)
@@ -595,34 +566,23 @@ if PYQT_AVAILABLE:
                         repeat_minutes=data["repeat_minutes"],
                     )
                     self._refresh_reminders()
-                    self.add_bot_message(f"Let's go! Напоминание «{data['title']}» добавлено!")
+                    self.add_bot_message(
+                        f"Let's go! Напоминание '{data['title']}' добавлено, бро!"
+                    )
 
         def _refresh_reminders(self):
+            from core.memory import get_active_reminders
             self.reminders_list.clear()
-            if not self.reminder_system:
-                return
-            reminders = self.reminder_system.get_all_reminders()
+            reminders = get_active_reminders()
             for r in reminders:
-                repeat_info = f" (каждые {r['repeat_minutes']} мин)" if r["repeat_minutes"] else ""
-                dt_info = f" в {r['remind_at']}" if r.get("remind_at") else ""
-                item_text = f"⏰ {r['title']}{dt_info}{repeat_info}"
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.ItemDataRole.UserRole, r["id"])
+                text = r["title"]
+                if r["repeat_minutes"]:
+                    text += f"  (каждые {r['repeat_minutes']} мин)"
+                if r.get("remind_at"):
+                    text += f"  в {r['remind_at']}"
+                item = QListWidgetItem(text)
                 self.reminders_list.addItem(item)
 
         def _save_settings(self):
             self.tts_enabled = self.tts_check.isChecked()
-            self.stt_enabled = self.stt_check.isChecked()
-            if self.reminder_system:
-                self.reminder_system.set_water_interval(self.water_spin.value())
-                self.reminder_system.set_break_interval(self.break_spin.value())
-                self.reminder_system.set_gaming_alert_threshold(self.gaming_spin.value())
-            self.add_bot_message("I'm your man! Настройки сохранены, чемпион!")
-
-        def show_reminder_notification(self, title: str, message: str):
-            """Показать уведомление напоминания в чате."""
-            self.add_bot_message(f"⏰ **{title}**\n{message}")
-            if self.tts_enabled:
-                from core.tts import speak
-                import threading
-                threading.Thread(target=speak, args=(message,), daemon=True).start()
+            self.add_bot_message("Yeah buddy! Настройки сохранены, бро!")
