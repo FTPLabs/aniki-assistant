@@ -36,3 +36,6 @@ pyttsx3>=2.90
 
 # Утилиты
 psutil>=5.9.0
+
+# Скриншоты (take_screenshot)
+Pillow>=10.0.0
