@@ -33,15 +33,22 @@ def _exec(sql: str, params=(), fetchone=False, fetchall=False, script=False):
         try:
             cur = conn.cursor()
             if script:
+                # FIX H5: executescript() делает неявный COMMIT сам —
+                # НЕ вызываем conn.commit() после него во избежание двойного коммита
                 cur.executescript(sql)
+                if fetchone:
+                    return cur.fetchone()
+                if fetchall:
+                    return cur.fetchall()
+                return cur.rowcount
             else:
                 cur.execute(sql, params)
-            conn.commit()
-            if fetchone:
-                return cur.fetchone()
-            if fetchall:
-                return cur.fetchall()
-            return cur.rowcount
+                conn.commit()
+                if fetchone:
+                    return cur.fetchone()
+                if fetchall:
+                    return cur.fetchall()
+                return cur.rowcount
         finally:
             conn.close()
 
