@@ -30,46 +30,39 @@ jobs:
         run: |
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install "PyQt6>=6.6.0" requests numpy psutil sounddevice soundfile
-          pip install "faster-whisper>=1.0.0" pyttsx3 pygame webrtcvad pyaudio
-          pip install pycaw comtypes pywin32 "Pillow>=10.0.0"
+          pip install "faster-whisper>=1.0.0" pyttsx3 pygame "Pillow>=10.0.0"
+          pip install pycaw comtypes pywin32 webrtcvad pyaudio
 
       - name: Create app icon
         working-directory: aniki_assistant
         run: python create_icon_ci.py
 
-      # FIX H4: используем aniki.spec с обновлёнными hiddenimports вместо флагов
-      # FIX C2: добавлены --collect-all torch, torchaudio, silero для работы TTS в .exe
-      - name: Bundle with PyInstaller (via spec)
+      # FIX C2+H4: collect_all встроен в spec, просто запускаем pyinstaller aniki.spec
+      - name: Bundle with PyInstaller
         working-directory: aniki_assistant
-        run: |
-          pyinstaller aniki.spec ^
-            --noconfirm ^
-            --collect-all torch ^
-            --collect-all torchaudio ^
-            --collect-all faster_whisper ^
-            --collect-all sounddevice ^
-            --collect-all ctranslate2 ^
-            --collect-all omegaconf ^
-            --hidden-import win32com.client ^
-            --hidden-import win32api ^
-            --hidden-import webrtcvad ^
-            --hidden-import pyaudio
+        run: pyinstaller aniki.spec --noconfirm
         shell: cmd
 
       - name: Verify EXE
+        shell: pwsh
         run: |
-          if (Test-Path "aniki_assistant/dist/Aniki/Aniki.exe") {
-            $size = (Get-Item "aniki_assistant/dist/Aniki/Aniki.exe").Length / 1MB
-            Write-Host "✓ Aniki.exe: $([math]::Round($size,1)) MB"
-          } elseif (Test-Path "aniki_assistant/dist/Aniki.exe") {
-            $size = (Get-Item "aniki_assistant/dist/Aniki.exe").Length / 1MB
-            Write-Host "✓ Aniki.exe (onefile): $([math]::Round($size,1)) MB"
-          } else {
-            Write-Error "Aniki.exe not found!"
-            exit 1
+          $paths = @(
+            "aniki_assistant/dist/Aniki/Aniki.exe",
+            "aniki_assistant/dist/Aniki.exe"
+          )
+          $found = $false
+          foreach ($p in $paths) {
+            if (Test-Path $p) {
+              $size = [math]::Round((Get-Item $p).Length / 1MB, 1)
+              Write-Host "OK Aniki.exe: $size MB — $p"
+              $found = $true
+              break
+            }
           }
+          if (-not $found) { Write-Error "Aniki.exe not found!"; exit 1 }
 
       - name: Zip release bundle
+        shell: pwsh
         run: |
           if (Test-Path "aniki_assistant/dist/Aniki") {
             Compress-Archive -Path "aniki_assistant/dist/Aniki/*" -DestinationPath "Aniki-Windows.zip"
@@ -93,20 +86,20 @@ jobs:
           body: |
             ## Аники ${{ github.ref_name }}
 
-            **Исправления в этом релизе:**
-            - [CRITICAL] Исправлен crash в `transcribe_audio_file` при незагруженном Whisper
-            - [CRITICAL] TTS (Silero/torch) теперь полностью включён в .exe сборку
-            - [HIGH] Устранена утечка потоков AIWorker при голосовом вводе во время ответа ИИ
-            - [HIGH] `speak()` теперь использует публичный API вместо приватных функций
+            **Исправления:**
+            - [CRITICAL] Crash в `transcribe_audio_file` при незагруженном Whisper — устранён
+            - [CRITICAL] TTS (Silero/torch) теперь полностью включён в .exe через `collect_all`
+            - [HIGH] Утечка потоков AIWorker при голосовом вводе во время ответа ИИ — устранена
+            - [HIGH] `chat_window` использует публичный `speak()` вместо приватных функций
             - [HIGH] `Pillow` добавлен в зависимости — скриншоты работают из коробки
-            - [HIGH] `.spec` файл теперь используется в CI для полного контроля сборки
-            - [HIGH] Исправлен двойной COMMIT в `memory.py` при `executescript`
-            - [MEDIUM] Рассинхронизация кнопки mic и чекбокса VAD устранена
+            - [HIGH] `.spec` с `collect_all` используется в CI вместо флагов командной строки
+            - [HIGH] Двойной COMMIT в `memory.py` при `executescript` — исправлен
+            - [MEDIUM] Рассинхронизация кнопки mic / чекбокса VAD — исправлена
             - [MEDIUM] `block_cipher` удалён из `aniki.spec` (устарел в PyInstaller 6.x)
 
             **Установка:**
             1. Установи [Ollama](https://ollama.com)
             2. В cmd: `ollama run mistral`
-            3. Распакуй архив и запусти `Aniki.exe`
+            3. Распакуй архив, запусти `Aniki.exe`
 
-            **Требования:** Windows 10/11 x64, микрофон (опционально)
+            **Требования:** Windows 10/11 x64
