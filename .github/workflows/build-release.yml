@@ -6,6 +6,9 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -37,7 +40,6 @@ jobs:
         working-directory: aniki_assistant
         run: python create_icon_ci.py
 
-      # FIX C2+H4: collect_all встроен в spec, просто запускаем pyinstaller aniki.spec
       - name: Bundle with PyInstaller
         working-directory: aniki_assistant
         run: pyinstaller aniki.spec --noconfirm
