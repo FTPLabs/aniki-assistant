@@ -1,4 +1,4 @@
-name: Build Aniki v2 — Windows EXE Release
+name: Build Aniki v2.1 — Windows EXE Release
 
 on:
   push:
@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. v2.0.0)'
+        description: 'Release version (e.g. v2.1.0)'
         required: true
-        default: 'v2.0.0'
+        default: 'v2.1.0'
 
 permissions:
   contents: write
@@ -29,15 +29,21 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip setuptools wheel
+
       - name: Install core deps
         working-directory: aniki_assistant
-        run: pip install PyQt6 requests pyttsx3 psutil pywin32
+        run: pip install PyQt6 requests pyttsx3 psutil pywin32 comtypes
 
       - name: Install PyTorch CPU
         run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install audio & speech deps
-        run: pip install faster-whisper sounddevice numpy pycaw comtypes
+        run: pip install faster-whisper sounddevice numpy pycaw
+
+      - name: Install webrtcvad (VAD)
+        run: pip install webrtcvad || echo "webrtcvad optional — skipping"
 
       - name: Install PyInstaller
         run: pip install pyinstaller==6.9.0
@@ -48,6 +54,7 @@ jobs:
         run: |
           if not exist resources mkdir resources
           if not exist data mkdir data
+          if not exist data\models mkdir data\models
 
       - name: Create icon
         working-directory: aniki_assistant
@@ -60,8 +67,7 @@ jobs:
               create_icon_ci.make_ico('resources/aniki.ico', sizes=(16, 32, 48, 256))
               print('Icon created via create_icon_ci')
           except Exception as e:
-              print(f'Icon creation note: {e}')
-              # Minimal valid ICO fallback
+              print(f'Icon fallback: {e}')
               ico_data = (
                   b'\x00\x00\x01\x00\x01\x00\x10\x10\x00\x00\x01\x00\x18\x00'
                   b'(\x00\x00\x00\x16\x00\x00\x00'
@@ -89,6 +95,7 @@ jobs:
             --hidden-import "pycaw.pycaw" ^
             --hidden-import "comtypes" ^
             --hidden-import "comtypes.client" ^
+            --hidden-import "comtypes.automation" ^
             --hidden-import "sounddevice" ^
             --hidden-import "faster_whisper" ^
             --hidden-import "sqlite3" ^
@@ -100,7 +107,14 @@ jobs:
             --hidden-import "pyttsx3.drivers" ^
             --hidden-import "pyttsx3.drivers.sapi5" ^
             --hidden-import "win32com.client" ^
+            --hidden-import "win32api" ^
+            --hidden-import "win32con" ^
+            --hidden-import "win32gui" ^
             --hidden-import "psutil" ^
+            --hidden-import "webrtcvad" ^
+            --hidden-import "wave" ^
+            --hidden-import "tempfile" ^
+            --hidden-import "webbrowser" ^
             --collect-all "faster_whisper" ^
             --collect-all "ctranslate2" ^
             --noconfirm ^
@@ -115,6 +129,7 @@ jobs:
             dir dist\Aniki\Aniki.exe
           ) else (
             echo BUILD FAILED
+            dir dist\Aniki\ 2>nul || echo No dist\Aniki dir
             exit /b 1
           )
 
@@ -124,7 +139,7 @@ jobs:
         run: |
           Compress-Archive -Path dist\Aniki\* -DestinationPath dist\Aniki-Windows-x64.zip -Force
           $size = (Get-Item dist\Aniki-Windows-x64.zip).Length / 1MB
-          Write-Host "ZIP: $([math]::Round($size,1)) MB"
+          Write-Host "ZIP size: $([math]::Round($size,1)) MB"
 
       - name: Get version
         id: get_version
@@ -142,38 +157,44 @@ jobs:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
           name: "Аники ${{ steps.get_version.outputs.VERSION }} — Windows EXE"
           body: |
-            ## Аники v2 — ИИ-ассистент Билли Херрингтона
+            ## Аники v2.1 — ИИ-ассистент Билли Херрингтона
 
             > *"Are you ready? Let's go!"*
+
+            ### Скачать
+            👉 **`Aniki-Windows-x64.zip`** — распакуй и запусти `Aniki.exe`
 
             ### Установка
             1. Скачай `Aniki-Windows-x64.zip`
             2. Распакуй в любую папку
-            3. Установи [Ollama](https://ollama.com) → в cmd запусти: `ollama run mistral`
+            3. Установи [Ollama](https://ollama.com) → в cmd: `ollama run mistral`
             4. Запусти `Aniki.exe`
+            5. SmartScreen предупредит → **Подробнее → Выполнить**
 
-            ### Что нового в v2
-            - Плавающий аватар Аники — рисованное лицо в углу экрана, анимирует рот при разговоре
-            - Мужской голос Silero (`aidar`) — естественный, не роботизированный
-            - Система обучения — скажи "Молодец" и Аники запомнит правильный ответ навсегда
-            - Поиск DuckDuckGo — находит информацию когда не знает сам
-            - Улучшенная личность — более харизматичный, быстрый, точный
+            ### Что нового в v2.1
+            - **Аватар Билли Херрингтона** — рисованный персонаж с усами, квадратной челюстью, анимация рта/глаз/состояний
+            - **VAD** — постоянно слушает микрофон, реагирует на голос без нажатий
+            - **Открой игру голосом** — "Аники, открой Rust/CS2/Dota 2" → запускает через Steam
+            - **Сверни окна** — "Сверни все окна" → мгновенно
+            - **Промпты** — "Напиши мне промпт для..." → диалог с кнопкой копирования
+            - **Полная память** — хранит весь разговор (200 сообщений)
+            - **Забывание** — "Забудь это / забудь про X / забудь всё"
+            - **webrtcvad** — точное определение голосовой активности
 
-            ### Возможности
-            - ИИ-чат на русском с гачимучи-фразами (Ollama + Mistral, полностью офлайн)
-            - Распознавание речи offline (faster-whisper)
-            - Мужской TTS на русском (Silero aidar)
-            - Команды Windows: звук, браузер, Discord, Steam, YouTube
-            - Память (SQLite) + обучение через фидбек
-            - Напоминания: вода, перерывы, игровое время
-            - Системный трей — работает в фоне
+            ### Голосовые команды
+            - `Аники, открой Rust` / `CS2` / `Dota 2` / `Discord` / `Steam`
+            - `Аники, сверни все окна`
+            - `Аники, напиши мне промпт для [чего угодно]`
+            - `Аники, запомни [информацию]`
+            - `Аники, забудь [это / про X / всё]`
+            - `Аники, что ты знаешь обо мне?`
+            - `Громкость 50%` / `Выключи звук`
+            - `Молодец` — Аники запоминает правильный ответ навсегда
 
             ### Требования
             - Windows 10/11 x64
             - [Ollama](https://ollama.com) для ИИ (~4GB Mistral модель)
-
-            ### Первый запуск
-            SmartScreen может предупредить — нажми **Подробнее → Выполнить**
+            - Микрофон для голосового управления
 
             ---
             *Wrestle with the best, die like the rest!*
