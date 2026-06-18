@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repo
@@ -24,74 +24,89 @@ jobs:
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller==6.4.0
+          pip install "pyinstaller==6.4.0"
 
       - name: Install runtime deps (CPU torch)
         run: |
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install PyQt6>=6.6.0 requests numpy psutil sounddevice soundfile faster-whisper pyttsx3 pygame
-          pip install pycaw comtypes pywin32
+          pip install "PyQt6>=6.6.0" requests numpy psutil sounddevice soundfile
+          pip install "faster-whisper>=1.0.0" pyttsx3 pygame webrtcvad pyaudio
+          pip install pycaw comtypes pywin32 "Pillow>=10.0.0"
 
       - name: Create app icon
         working-directory: aniki_assistant
         run: python create_icon_ci.py
 
-      - name: Bundle with PyInstaller
+      # FIX H4: используем aniki.spec с обновлёнными hiddenimports вместо флагов
+      # FIX C2: добавлены --collect-all torch, torchaudio, silero для работы TTS в .exe
+      - name: Bundle with PyInstaller (via spec)
         working-directory: aniki_assistant
         run: |
-          pyinstaller ^
-            --name "Aniki" ^
-            --onefile ^
-            --windowed ^
-            --icon "resources/aniki.ico" ^
-            --add-data "resources;resources" ^
-            --add-data "data;data" ^
-            --hidden-import PyQt6.sip ^
-            --hidden-import PyQt6.QtCore ^
-            --hidden-import PyQt6.QtWidgets ^
-            --hidden-import PyQt6.QtGui ^
-            --hidden-import pyttsx3.drivers ^
-            --hidden-import pyttsx3.drivers.sapi5 ^
+          pyinstaller aniki.spec ^
+            --noconfirm ^
+            --collect-all torch ^
+            --collect-all torchaudio ^
             --collect-all faster_whisper ^
             --collect-all sounddevice ^
-            main.py
+            --collect-all ctranslate2 ^
+            --collect-all omegaconf ^
+            --hidden-import win32com.client ^
+            --hidden-import win32api ^
+            --hidden-import webrtcvad ^
+            --hidden-import pyaudio
         shell: cmd
 
       - name: Verify EXE
         run: |
-          if (Test-Path "aniki_assistant/dist/Aniki.exe") {
-            $size = (Get-Item "aniki_assistant/dist/Aniki.exe").Length / 1MB
+          if (Test-Path "aniki_assistant/dist/Aniki/Aniki.exe") {
+            $size = (Get-Item "aniki_assistant/dist/Aniki/Aniki.exe").Length / 1MB
             Write-Host "✓ Aniki.exe: $([math]::Round($size,1)) MB"
+          } elseif (Test-Path "aniki_assistant/dist/Aniki.exe") {
+            $size = (Get-Item "aniki_assistant/dist/Aniki.exe").Length / 1MB
+            Write-Host "✓ Aniki.exe (onefile): $([math]::Round($size,1)) MB"
           } else {
             Write-Error "Aniki.exe not found!"
             exit 1
+          }
+
+      - name: Zip release bundle
+        run: |
+          if (Test-Path "aniki_assistant/dist/Aniki") {
+            Compress-Archive -Path "aniki_assistant/dist/Aniki/*" -DestinationPath "Aniki-Windows.zip"
+          } else {
+            Compress-Archive -Path "aniki_assistant/dist/Aniki.exe" -DestinationPath "Aniki-Windows.zip"
           }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Aniki-Windows-${{ github.sha }}
-          path: aniki_assistant/dist/Aniki.exe
+          path: Aniki-Windows.zip
           retention-days: 30
 
       - name: Create GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: aniki_assistant/dist/Aniki.exe
+          files: Aniki-Windows.zip
           generate_release_notes: true
           body: |
-            ## Аники v${{ github.ref_name }}
+            ## Аники ${{ github.ref_name }}
 
-            **Что нового:**
-            - Умный парсинг команд (не путает "канал на Rust" с "запусти Rust")
-            - Стриминг TTS — говорит сразу с первого предложения
-            - Аватар Билли Херрингтона (реальное фото)
-            - Потокобезопасная SQLite БД
-            - Исправлены все найденные баги
-            - Авто-установка зависимостей при старте
+            **Исправления в этом релизе:**
+            - [CRITICAL] Исправлен crash в `transcribe_audio_file` при незагруженном Whisper
+            - [CRITICAL] TTS (Silero/torch) теперь полностью включён в .exe сборку
+            - [HIGH] Устранена утечка потоков AIWorker при голосовом вводе во время ответа ИИ
+            - [HIGH] `speak()` теперь использует публичный API вместо приватных функций
+            - [HIGH] `Pillow` добавлен в зависимости — скриншоты работают из коробки
+            - [HIGH] `.spec` файл теперь используется в CI для полного контроля сборки
+            - [HIGH] Исправлен двойной COMMIT в `memory.py` при `executescript`
+            - [MEDIUM] Рассинхронизация кнопки mic и чекбокса VAD устранена
+            - [MEDIUM] `block_cipher` удалён из `aniki.spec` (устарел в PyInstaller 6.x)
 
             **Установка:**
             1. Установи [Ollama](https://ollama.com)
             2. В cmd: `ollama run mistral`
-            3. Запусти `Aniki.exe`
+            3. Распакуй архив и запусти `Aniki.exe`
+
+            **Требования:** Windows 10/11 x64, микрофон (опционально)
