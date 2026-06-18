@@ -1,7 +1,6 @@
 """
-Система обучения Аники — запоминает что сработало, когда пользователь говорит «Молодец».
+Система обучения Аники — запоминает что сработало.
 """
-
 import logging
 from typing import Optional
 from .memory import get_connection, get_profile
@@ -12,18 +11,16 @@ logger = logging.getLogger(__name__)
 POSITIVE_TRIGGERS = {
     "молодец", "правильно", "верно", "отлично", "супер", "хорошо",
     "да так", "именно", "точно", "правда", "так и есть", "ты прав",
-    "well done", "good job", "nice", "correct", "perfect", "yes",
-    "огонь", "топ", "красава", "зачёт", "сделал", "класс",
+    "well done", "good job", "nice", "correct", "perfect",
+    "огонь", "топ", "красава", "зачёт", "класс",
 }
 
 NEGATIVE_TRIGGERS = {
-    "неправильно", "нет", "не так", "ошибка", "неверно", "плохо",
-    "не то", "не угадал", "неточно", "не верно",
+    "неправильно", "неверно", "плохо", "не то", "не угадал", "неточно",
 }
 
 
 def init_learning_table():
-    """Создать таблицу обученных знаний если нет."""
     conn = get_connection()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS learned_responses (
@@ -48,7 +45,6 @@ def init_learning_table():
 
 
 def save_last_exchange(user_text: str, bot_text: str):
-    """Сохранить последний обмен для обучения."""
     try:
         conn = get_connection()
         conn.execute("""
@@ -65,21 +61,19 @@ def save_last_exchange(user_text: str, bot_text: str):
         logger.error(f"Ошибка сохранения обмена: {e}")
 
 
-def get_last_exchange() -> Optional[tuple[str, str]]:
-    """Получить последний обмен."""
+def get_last_exchange() -> Optional[tuple]:
     try:
         conn = get_connection()
-        row = conn.execute("SELECT user_text, bot_text FROM last_exchange WHERE id=1").fetchone()
+        row = conn.execute(
+            "SELECT user_text, bot_text FROM last_exchange WHERE id=1"
+        ).fetchone()
         conn.close()
-        if row:
-            return row["user_text"], row["bot_text"]
+        return (row["user_text"], row["bot_text"]) if row else None
     except Exception:
-        pass
-    return None
+        return None
 
 
 def confirm_last_response():
-    """Пользователь сказал 'Молодец' — сохраняем пару вопрос→ответ."""
     exchange = get_last_exchange()
     if not exchange:
         return
@@ -104,13 +98,12 @@ def confirm_last_response():
             )
         conn.commit()
         conn.close()
-        logger.info(f"Обучен: '{user_text[:50]}...'")
+        logger.info(f"Обучен: '{user_text[:50]}'")
     except Exception as e:
         logger.error(f"Ошибка обучения: {e}")
 
 
 def find_learned_response(user_text: str) -> Optional[str]:
-    """Поискать выученный ответ на похожий вопрос."""
     try:
         conn = get_connection()
         query_words = set(user_text.lower().split())
@@ -118,20 +111,17 @@ def find_learned_response(user_text: str) -> Optional[str]:
             "SELECT trigger_text, response_text, score FROM learned_responses ORDER BY score DESC LIMIT 50"
         ).fetchall()
         conn.close()
-
-        best_score = 0
-        best_response = None
+        best_score, best_response = 0.0, None
         for row in rows:
             trigger_words = set(row["trigger_text"].split())
             if not trigger_words:
                 continue
             overlap = len(query_words & trigger_words)
-            match_ratio = overlap / max(len(trigger_words), 1)
-            weighted = match_ratio * row["score"]
-            if weighted > best_score and match_ratio > 0.6:
+            ratio = overlap / max(len(trigger_words), 1)
+            weighted = ratio * row["score"]
+            if weighted > best_score and ratio > 0.6:
                 best_score = weighted
                 best_response = row["response_text"]
-
         return best_response
     except Exception as e:
         logger.error(f"Ошибка поиска: {e}")
@@ -140,12 +130,20 @@ def find_learned_response(user_text: str) -> Optional[str]:
 
 def check_feedback(user_text: str) -> Optional[str]:
     """
-    Проверяет — это фидбек ('Молодец' / 'Нет') или обычный вопрос.
-    Возвращает 'positive', 'negative' или None.
+    FIX: только короткие сообщения (≤4 слова) считаются фидбеком.
+    'Нет' в длинном предложении — не отказ.
     """
-    words = set(user_text.lower().split())
-    if words & POSITIVE_TRIGGERS:
+    words = user_text.strip().split()
+    if len(words) > 4:
+        return None   # слишком длинное сообщение — не фидбек
+
+    word_set = {w.lower().strip(".,!?") for w in words}
+    if word_set & POSITIVE_TRIGGERS:
         return "positive"
-    if words & NEGATIVE_TRIGGERS:
+
+    # Негативный фидбек — только если "нет" / "неправильно" и т.п. стоят отдельно
+    single_negatives = {"нет", "no", "nope", "неверно", "неправильно"}
+    if word_set & (NEGATIVE_TRIGGERS | single_negatives):
         return "negative"
+
     return None
