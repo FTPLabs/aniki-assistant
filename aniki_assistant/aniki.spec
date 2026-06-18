@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec file для Аники
+# PyInstaller spec — Аники v2.0
 
 import os
 
@@ -36,6 +36,10 @@ a = Analysis(
         'pywin32',
         'win32com.client',
         'psutil',
+        'urllib.request',
+        'urllib.parse',
+        'json',
+        're',
     ],
     hookspath=[],
     hooksconfig={},
