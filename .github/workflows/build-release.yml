@@ -1,204 +1,97 @@
-name: Build Aniki v2.1 — Windows EXE Release
+name: Build Windows EXE
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ['v*']
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Release version (e.g. v2.1.0)'
-        required: true
-        default: 'v2.1.0'
-
-permissions:
-  contents: write
 
 jobs:
-  build-windows:
-    name: Build Windows EXE
+  build:
     runs-on: windows-latest
+    timeout-minutes: 90
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: "3.11"
+          cache: "pip"
 
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip setuptools wheel
-
-      - name: Install core deps
-        working-directory: aniki_assistant
-        run: pip install PyQt6 requests pyttsx3 psutil pywin32 comtypes
-
-      - name: Install PyTorch CPU
-        run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Install audio & speech deps
-        run: pip install faster-whisper sounddevice numpy pycaw
-
-      - name: Install webrtcvad (VAD)
-        run: pip install webrtcvad || echo "webrtcvad optional — skipping"
-
-      - name: Install PyInstaller
-        run: pip install pyinstaller==6.9.0
-
-      - name: Create data & resources dirs
-        working-directory: aniki_assistant
-        shell: cmd
+      - name: Install build tools
         run: |
-          if not exist resources mkdir resources
-          if not exist data mkdir data
-          if not exist data\models mkdir data\models
+          python -m pip install --upgrade pip
+          pip install pyinstaller==6.4.0
 
-      - name: Create icon
-        working-directory: aniki_assistant
-        shell: python
+      - name: Install runtime deps (CPU torch)
         run: |
-          import os, struct
-          os.makedirs('resources', exist_ok=True)
-          try:
-              import create_icon_ci
-              create_icon_ci.make_ico('resources/aniki.ico', sizes=(16, 32, 48, 256))
-              print('Icon created via create_icon_ci')
-          except Exception as e:
-              print(f'Icon fallback: {e}')
-              ico_data = (
-                  b'\x00\x00\x01\x00\x01\x00\x10\x10\x00\x00\x01\x00\x18\x00'
-                  b'(\x00\x00\x00\x16\x00\x00\x00'
-                  + b'\x00' * 800
-              )
-              with open('resources/aniki.ico', 'wb') as f:
-                  f.write(ico_data)
-              print('Fallback icon written')
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install PyQt6>=6.6.0 requests numpy psutil sounddevice soundfile faster-whisper pyttsx3 pygame
+          pip install pycaw comtypes pywin32
 
-      - name: Build EXE with PyInstaller
+      - name: Create app icon
         working-directory: aniki_assistant
-        shell: cmd
+        run: python create_icon_ci.py
+
+      - name: Bundle with PyInstaller
+        working-directory: aniki_assistant
         run: |
           pyinstaller ^
             --name "Aniki" ^
-            --onedir ^
+            --onefile ^
             --windowed ^
-            --icon "resources\aniki.ico" ^
+            --icon "resources/aniki.ico" ^
             --add-data "resources;resources" ^
             --add-data "data;data" ^
-            --hidden-import "PyQt6.QtCore" ^
-            --hidden-import "PyQt6.QtWidgets" ^
-            --hidden-import "PyQt6.QtGui" ^
-            --hidden-import "PyQt6.sip" ^
-            --hidden-import "pycaw.pycaw" ^
-            --hidden-import "comtypes" ^
-            --hidden-import "comtypes.client" ^
-            --hidden-import "comtypes.automation" ^
-            --hidden-import "sounddevice" ^
-            --hidden-import "faster_whisper" ^
-            --hidden-import "sqlite3" ^
-            --hidden-import "torch" ^
-            --hidden-import "torchaudio" ^
-            --hidden-import "numpy" ^
-            --hidden-import "requests" ^
-            --hidden-import "pyttsx3" ^
-            --hidden-import "pyttsx3.drivers" ^
-            --hidden-import "pyttsx3.drivers.sapi5" ^
-            --hidden-import "win32com.client" ^
-            --hidden-import "win32api" ^
-            --hidden-import "win32con" ^
-            --hidden-import "win32gui" ^
-            --hidden-import "psutil" ^
-            --hidden-import "webrtcvad" ^
-            --hidden-import "wave" ^
-            --hidden-import "tempfile" ^
-            --hidden-import "webbrowser" ^
-            --collect-all "faster_whisper" ^
-            --collect-all "ctranslate2" ^
-            --noconfirm ^
+            --hidden-import PyQt6.sip ^
+            --hidden-import PyQt6.QtCore ^
+            --hidden-import PyQt6.QtWidgets ^
+            --hidden-import PyQt6.QtGui ^
+            --hidden-import pyttsx3.drivers ^
+            --hidden-import pyttsx3.drivers.sapi5 ^
+            --collect-all faster_whisper ^
+            --collect-all sounddevice ^
             main.py
-
-      - name: Verify build
-        working-directory: aniki_assistant
         shell: cmd
-        run: |
-          if exist "dist\Aniki\Aniki.exe" (
-            echo BUILD SUCCESS
-            dir dist\Aniki\Aniki.exe
-          ) else (
-            echo BUILD FAILED
-            dir dist\Aniki\ 2>nul || echo No dist\Aniki dir
-            exit /b 1
-          )
 
-      - name: Create ZIP
-        working-directory: aniki_assistant
-        shell: powershell
+      - name: Verify EXE
         run: |
-          Compress-Archive -Path dist\Aniki\* -DestinationPath dist\Aniki-Windows-x64.zip -Force
-          $size = (Get-Item dist\Aniki-Windows-x64.zip).Length / 1MB
-          Write-Host "ZIP size: $([math]::Round($size,1)) MB"
-
-      - name: Get version
-        id: get_version
-        shell: powershell
-        run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            echo "VERSION=${{ github.event.inputs.version }}" >> $env:GITHUB_OUTPUT
+          if (Test-Path "aniki_assistant/dist/Aniki.exe") {
+            $size = (Get-Item "aniki_assistant/dist/Aniki.exe").Length / 1MB
+            Write-Host "✓ Aniki.exe: $([math]::Round($size,1)) MB"
           } else {
-            echo "VERSION=${{ github.ref_name }}" >> $env:GITHUB_OUTPUT
+            Write-Error "Aniki.exe not found!"
+            exit 1
           }
 
-      - name: Upload Release
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aniki-Windows-${{ github.sha }}
+          path: aniki_assistant/dist/Aniki.exe
+          retention-days: 30
+
+      - name: Create GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.get_version.outputs.VERSION }}
-          name: "Аники ${{ steps.get_version.outputs.VERSION }} — Windows EXE"
+          files: aniki_assistant/dist/Aniki.exe
+          generate_release_notes: true
           body: |
-            ## Аники v2.1 — ИИ-ассистент Билли Херрингтона
+            ## Аники v${{ github.ref_name }}
 
-            > *"Are you ready? Let's go!"*
+            **Что нового:**
+            - Умный парсинг команд (не путает "канал на Rust" с "запусти Rust")
+            - Стриминг TTS — говорит сразу с первого предложения
+            - Аватар Билли Херрингтона (реальное фото)
+            - Потокобезопасная SQLite БД
+            - Исправлены все найденные баги
+            - Авто-установка зависимостей при старте
 
-            ### Скачать
-            👉 **`Aniki-Windows-x64.zip`** — распакуй и запусти `Aniki.exe`
-
-            ### Установка
-            1. Скачай `Aniki-Windows-x64.zip`
-            2. Распакуй в любую папку
-            3. Установи [Ollama](https://ollama.com) → в cmd: `ollama run mistral`
-            4. Запусти `Aniki.exe`
-            5. SmartScreen предупредит → **Подробнее → Выполнить**
-
-            ### Что нового в v2.1
-            - **Аватар Билли Херрингтона** — рисованный персонаж с усами, квадратной челюстью, анимация рта/глаз/состояний
-            - **VAD** — постоянно слушает микрофон, реагирует на голос без нажатий
-            - **Открой игру голосом** — "Аники, открой Rust/CS2/Dota 2" → запускает через Steam
-            - **Сверни окна** — "Сверни все окна" → мгновенно
-            - **Промпты** — "Напиши мне промпт для..." → диалог с кнопкой копирования
-            - **Полная память** — хранит весь разговор (200 сообщений)
-            - **Забывание** — "Забудь это / забудь про X / забудь всё"
-            - **webrtcvad** — точное определение голосовой активности
-
-            ### Голосовые команды
-            - `Аники, открой Rust` / `CS2` / `Dota 2` / `Discord` / `Steam`
-            - `Аники, сверни все окна`
-            - `Аники, напиши мне промпт для [чего угодно]`
-            - `Аники, запомни [информацию]`
-            - `Аники, забудь [это / про X / всё]`
-            - `Аники, что ты знаешь обо мне?`
-            - `Громкость 50%` / `Выключи звук`
-            - `Молодец` — Аники запоминает правильный ответ навсегда
-
-            ### Требования
-            - Windows 10/11 x64
-            - [Ollama](https://ollama.com) для ИИ (~4GB Mistral модель)
-            - Микрофон для голосового управления
-
-            ---
-            *Wrestle with the best, die like the rest!*
-          files: aniki_assistant/dist/Aniki-Windows-x64.zip
-          fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            **Установка:**
+            1. Установи [Ollama](https://ollama.com)
+            2. В cmd: `ollama run mistral`
+            3. Запусти `Aniki.exe`
