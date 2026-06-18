@@ -1,4 +1,4 @@
-# Аники — зависимости
+# Аники v2.0 — зависимости
 # Установка: pip install -r requirements.txt
 
 # GUI
@@ -7,15 +7,15 @@ PyQt6>=6.6.0
 # HTTP запросы к Ollama
 requests>=2.31.0
 
-# Голосовой синтез (TTS) — русский язык
+# Голосовой синтез (TTS) — мужской голос Silero, офлайн
 torch>=2.1.0
 torchaudio>=2.1.0
 sounddevice>=0.4.6
 
-# Распознавание речи (STT) — офлайн
+# Распознавание речи (STT) — офлайн через faster-whisper
 faster-whisper>=1.0.0
 
-# Аудио обработка
+# Аудио
 numpy>=1.24.0
 pyaudio>=0.2.13
 
