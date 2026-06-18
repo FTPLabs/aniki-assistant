@@ -1,4 +1,4 @@
-name: Build Aniki Windows EXE Release
+name: Build Aniki v2 — Windows EXE Release
 
 on:
   push:
@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. v1.0.0)'
+        description: 'Release version (e.g. v2.0.0)'
         required: true
-        default: 'v1.0.0'
+        default: 'v2.0.0'
 
 permissions:
   contents: write
@@ -20,7 +20,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python 3.11
@@ -29,38 +29,47 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install core dependencies
+      - name: Install core deps
         working-directory: aniki_assistant
         run: pip install PyQt6 requests pyttsx3 psutil pywin32
 
       - name: Install PyTorch CPU
         run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Install audio & speech dependencies
+      - name: Install audio & speech deps
         run: pip install faster-whisper sounddevice numpy pycaw comtypes
 
       - name: Install PyInstaller
         run: pip install pyinstaller==6.9.0
 
-      - name: Create icon (no display needed)
+      - name: Create data & resources dirs
+        working-directory: aniki_assistant
+        shell: cmd
+        run: |
+          if not exist resources mkdir resources
+          if not exist data mkdir data
+
+      - name: Create icon
         working-directory: aniki_assistant
         shell: python
         run: |
-          import sys, os
-          sys.path.insert(0, '.')
+          import os, struct
           os.makedirs('resources', exist_ok=True)
-          os.makedirs('data', exist_ok=True)
           try:
               import create_icon_ci
               create_icon_ci.make_ico('resources/aniki.ico', sizes=(16, 32, 48, 256))
+              print('Icon created via create_icon_ci')
           except Exception as e:
               print(f'Icon creation note: {e}')
-              # Create minimal 1x1 ICO as absolute fallback
+              # Minimal valid ICO fallback
+              ico_data = (
+                  b'\x00\x00\x01\x00\x01\x00\x10\x10\x00\x00\x01\x00\x18\x00'
+                  b'(\x00\x00\x00\x16\x00\x00\x00'
+                  + b'\x00' * 800
+              )
               with open('resources/aniki.ico', 'wb') as f:
-                  import struct
-                  f.write(b'\x00\x00\x01\x00\x01\x00\x01\x01\x00\x00\x01\x00\x18\x00(\x00\x00\x00\x16\x00\x00\x00')
-              print('Fallback icon created')
-          print('Icon step done')
+                  f.write(ico_data)
+              print('Fallback icon written')
 
       - name: Build EXE with PyInstaller
         working-directory: aniki_assistant
@@ -105,17 +114,17 @@ jobs:
             echo BUILD SUCCESS
             dir dist\Aniki\Aniki.exe
           ) else (
-            echo BUILD FAILED - exe not found
+            echo BUILD FAILED
             exit /b 1
           )
 
-      - name: Create ZIP archive
+      - name: Create ZIP
         working-directory: aniki_assistant
         shell: powershell
         run: |
           Compress-Archive -Path dist\Aniki\* -DestinationPath dist\Aniki-Windows-x64.zip -Force
           $size = (Get-Item dist\Aniki-Windows-x64.zip).Length / 1MB
-          Write-Host "ZIP created: $([math]::Round($size, 1)) MB"
+          Write-Host "ZIP: $([math]::Round($size,1)) MB"
 
       - name: Get version
         id: get_version
@@ -127,40 +136,47 @@ jobs:
             echo "VERSION=${{ github.ref_name }}" >> $env:GITHUB_OUTPUT
           }
 
-      - name: Upload to Release
+      - name: Upload Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
-          name: "🤜 Аники ${{ steps.get_version.outputs.VERSION }} — Windows EXE"
+          name: "Аники ${{ steps.get_version.outputs.VERSION }} — Windows EXE"
           body: |
-            ## 🤜 Аники — ИИ-ассистент Билли Херрингтона
+            ## Аники v2 — ИИ-ассистент Билли Херрингтона
 
             > *"Are you ready? Let's go!"*
 
-            ### 📦 Установка
+            ### Установка
             1. Скачай `Aniki-Windows-x64.zip`
             2. Распакуй в любую папку
-            3. Установи [Ollama](https://ollama.com) → запусти `ollama run mistral`
+            3. Установи [Ollama](https://ollama.com) → в cmd запусти: `ollama run mistral`
             4. Запусти `Aniki.exe`
 
-            ### ✨ Возможности
-            - 💬 ИИ-чат на русском с гачимучи-фразами (Ollama + Mistral, **полностью офлайн**)
-            - 🎤 Распознавание речи offline (faster-whisper)
-            - 🔊 Нейросетевой TTS на русском (Silero)
-            - 🖥️ Команды: звук, браузер, Discord, Steam, YouTube
-            - 💾 Память о тебе (SQLite)
-            - ⏰ Напоминания: вода, перерывы, игровое время
-            - 🔔 Системный трей — работает в фоне
+            ### Что нового в v2
+            - Плавающий аватар Аники — рисованное лицо в углу экрана, анимирует рот при разговоре
+            - Мужской голос Silero (`aidar`) — естественный, не роботизированный
+            - Система обучения — скажи "Молодец" и Аники запомнит правильный ответ навсегда
+            - Поиск DuckDuckGo — находит информацию когда не знает сам
+            - Улучшенная личность — более харизматичный, быстрый, точный
 
-            ### 🛠️ Требования
+            ### Возможности
+            - ИИ-чат на русском с гачимучи-фразами (Ollama + Mistral, полностью офлайн)
+            - Распознавание речи offline (faster-whisper)
+            - Мужской TTS на русском (Silero aidar)
+            - Команды Windows: звук, браузер, Discord, Steam, YouTube
+            - Память (SQLite) + обучение через фидбек
+            - Напоминания: вода, перерывы, игровое время
+            - Системный трей — работает в фоне
+
+            ### Требования
             - Windows 10/11 x64
             - [Ollama](https://ollama.com) для ИИ (~4GB Mistral модель)
 
-            ### ⚠️ Первый запуск
+            ### Первый запуск
             SmartScreen может предупредить — нажми **Подробнее → Выполнить**
 
             ---
-            *Wrestle with the best, die like the rest!* 🤜
+            *Wrestle with the best, die like the rest!*
           files: aniki_assistant/dist/Aniki-Windows-x64.zip
           fail_on_unmatched_files: true
         env:
