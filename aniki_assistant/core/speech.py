@@ -223,10 +223,15 @@ class VoiceListener:
                 text_lower = text.lower()
                 if self.wake_word in text_lower:
                     self._active_listening = True
+                    self._last_wake_word_time = time.time()  # FIX [H3]
                     clean = text_lower.replace(self.wake_word, "").strip(" ,.-!")
                     if clean:
                         self.callback(clean)
                 elif self._active_listening:
+                    # FIX [H3]: сбрасываем флаг через 30с без wake-word
+                    if time.time() - getattr(self, "_last_wake_word_time", 0) > 30:
+                        self._active_listening = False
+                        return
                     self.callback(text)
             else:
                 self.callback(text)
