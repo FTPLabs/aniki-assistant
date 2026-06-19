@@ -1,9 +1,12 @@
 """
 Система обучения Аники — запоминает что сработало.
+FIX [C1]: все DB-операции теперь используют _db_lock из memory.py
+FIX [H4]: try/finally во всех функциях — нет утечек соединений
 """
 import logging
+import threading
 from typing import Optional
-from .memory import get_connection, get_profile
+from .memory import get_connection, get_profile, _db_lock
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -21,54 +24,63 @@ NEGATIVE_TRIGGERS = {
 
 
 def init_learning_table():
-    conn = get_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS learned_responses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            trigger_text TEXT NOT NULL,
-            response_text TEXT NOT NULL,
-            score INTEGER DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS last_exchange (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            user_text TEXT,
-            bot_text TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with _db_lock:
+        conn = get_connection()
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS learned_responses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trigger_text TEXT NOT NULL,
+                    response_text TEXT NOT NULL,
+                    score INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS last_exchange (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    user_text TEXT,
+                    bot_text TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def save_last_exchange(user_text: str, bot_text: str):
     try:
-        conn = get_connection()
-        conn.execute("""
-            INSERT INTO last_exchange (id, user_text, bot_text, updated_at)
-            VALUES (1, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                user_text=excluded.user_text,
-                bot_text=excluded.bot_text,
-                updated_at=excluded.updated_at
-        """, (user_text, bot_text, datetime.now()))
-        conn.commit()
-        conn.close()
+        with _db_lock:
+            conn = get_connection()
+            try:
+                conn.execute("""
+                    INSERT INTO last_exchange (id, user_text, bot_text, updated_at)
+                    VALUES (1, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        user_text=excluded.user_text,
+                        bot_text=excluded.bot_text,
+                        updated_at=excluded.updated_at
+                """, (user_text, bot_text, datetime.now()))
+                conn.commit()
+            finally:
+                conn.close()
     except Exception as e:
         logger.error(f"Ошибка сохранения обмена: {e}")
 
 
 def get_last_exchange() -> Optional[tuple]:
     try:
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT user_text, bot_text FROM last_exchange WHERE id=1"
-        ).fetchone()
-        conn.close()
-        return (row["user_text"], row["bot_text"]) if row else None
+        with _db_lock:
+            conn = get_connection()
+            try:
+                row = conn.execute(
+                    "SELECT user_text, bot_text FROM last_exchange WHERE id=1"
+                ).fetchone()
+                return (row["user_text"], row["bot_text"]) if row else None
+            finally:
+                conn.close()
     except Exception:
         return None
 
@@ -81,23 +93,26 @@ def confirm_last_response():
     if not user_text or not bot_text:
         return
     try:
-        conn = get_connection()
-        existing = conn.execute(
-            "SELECT id, score FROM learned_responses WHERE trigger_text=?",
-            (user_text.lower().strip(),)
-        ).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE learned_responses SET score=score+1, last_used=? WHERE id=?",
-                (datetime.now(), existing["id"])
-            )
-        else:
-            conn.execute(
-                "INSERT INTO learned_responses (trigger_text, response_text) VALUES (?,?)",
-                (user_text.lower().strip(), bot_text)
-            )
-        conn.commit()
-        conn.close()
+        with _db_lock:
+            conn = get_connection()
+            try:
+                existing = conn.execute(
+                    "SELECT id, score FROM learned_responses WHERE trigger_text=?",
+                    (user_text.lower().strip(),)
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE learned_responses SET score=score+1, last_used=? WHERE id=?",
+                        (datetime.now(), existing["id"])
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO learned_responses (trigger_text, response_text) VALUES (?,?)",
+                        (user_text.lower().strip(), bot_text)
+                    )
+                conn.commit()
+            finally:
+                conn.close()
         logger.info(f"Обучен: '{user_text[:50]}'")
     except Exception as e:
         logger.error(f"Ошибка обучения: {e}")
@@ -105,12 +120,15 @@ def confirm_last_response():
 
 def find_learned_response(user_text: str) -> Optional[str]:
     try:
-        conn = get_connection()
-        query_words = set(user_text.lower().split())
-        rows = conn.execute(
-            "SELECT trigger_text, response_text, score FROM learned_responses ORDER BY score DESC LIMIT 50"
-        ).fetchall()
-        conn.close()
+        with _db_lock:
+            conn = get_connection()
+            try:
+                query_words = set(user_text.lower().split())
+                rows = conn.execute(
+                    "SELECT trigger_text, response_text, score FROM learned_responses ORDER BY score DESC LIMIT 50"
+                ).fetchall()
+            finally:
+                conn.close()
         best_score, best_response = 0.0, None
         for row in rows:
             trigger_words = set(row["trigger_text"].split())
@@ -135,13 +153,12 @@ def check_feedback(user_text: str) -> Optional[str]:
     """
     words = user_text.strip().split()
     if len(words) > 4:
-        return None   # слишком длинное сообщение — не фидбек
+        return None
 
     word_set = {w.lower().strip(".,!?") for w in words}
     if word_set & POSITIVE_TRIGGERS:
         return "positive"
 
-    # Негативный фидбек — только если "нет" / "неправильно" и т.п. стоят отдельно
     single_negatives = {"нет", "no", "nope", "неверно", "неправильно"}
     if word_set & (NEGATIVE_TRIGGERS | single_negatives):
         return "negative"
