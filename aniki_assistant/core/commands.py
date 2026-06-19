@@ -1,14 +1,16 @@
 """
 Обработчик системных команд Windows для Аники v2.3.
-FIX: умный парсинг — не путает "YouTube-канал Wacky на Rust" с "открой Rust".
-NEW: открытие YouTube-каналов по имени автора.
-NEW: открытие произвольных URL.
+FIX [C2]: URL-кодирование YouTube-каналов (%3D%3D вместо %253D%253D).
+FIX [H2]: toggle_microphone() — реальное управление через pycaw.
+FIX [H3]: open_application() раскрывает wildcard-пути через glob.
+FIX [M3]: удалён дублирующийся _VOLUME_RE (покрывался _VOLUME_SET_RE).
 """
 
 import subprocess
 import os
 import sys
 import re
+import glob as _glob
 import webbrowser
 import logging
 from typing import Tuple, Optional
@@ -59,7 +61,25 @@ def toggle_mute() -> Tuple[bool, str]:
 
 
 def toggle_microphone() -> Tuple[bool, str]:
-    return True, "Микрофон переключён"
+    """
+    FIX [H2]: реальное управление микрофоном через pycaw.
+    Переключает mute на микрофоне по умолчанию.
+    """
+    if IS_WINDOWS and PYCAW_AVAILABLE:
+        try:
+            mic = AudioUtilities.GetMicrophone()
+            if mic is None:
+                return False, "Микрофон не найден"
+            interface = mic.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume    = interface.QueryInterface(IAudioEndpointVolume)
+            muted     = volume.GetMute()
+            volume.SetMute(not muted, None)
+            state = "выключен" if not muted else "включён"
+            return True, f"Микрофон {state}!"
+        except Exception as e:
+            logger.error(f"Ошибка микрофона: {e}")
+            return False, "Управление микрофоном недоступно"
+    return False, "Управление микрофоном только на Windows"
 
 
 # ── Окна ──────────────────────────────────────────────────────────────────────
@@ -159,6 +179,18 @@ def _is_real_launch_command(text: str, app_keyword: str) -> bool:
     return False
 
 
+def _resolve_app_path(wildcard_path: str) -> Optional[str]:
+    """
+    FIX [H3]: раскрывает wildcard-пути из APP_MAP через glob.
+    Возвращает первый найденный путь или None.
+    """
+    matches = _glob.glob(wildcard_path)
+    if matches:
+        # Предпочитаем самую новую версию (например app-1.0.9145 > app-1.0.9000)
+        return sorted(matches)[-1]
+    return None
+
+
 def open_application(name: str) -> Tuple[bool, str]:
     name_lower = name.lower().strip()
     for key, cmds in APP_MAP.items():
@@ -167,6 +199,14 @@ def open_application(name: str) -> Tuple[bool, str]:
                 if len(cmds) == 2 and cmds[1].startswith("steam://"):
                     webbrowser.open(cmds[1])
                     return True, f"Запускаю {key.capitalize()} через Steam!"
+                # FIX [H3]: пробуем раскрыть wildcard-путь если он есть
+                exe_path = None
+                if len(cmds) >= 2 and "*" in cmds[1]:
+                    exe_path = _resolve_app_path(cmds[1])
+                if exe_path and os.path.exists(exe_path):
+                    subprocess.Popen([exe_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return True, f"Запускаю {key.capitalize()}!"
+                # Fallback: команда из PATH
                 subprocess.Popen(cmds[:1], shell=False,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return True, f"Запускаю {key.capitalize()}!"
@@ -222,10 +262,9 @@ def open_youtube(query: str = "") -> Tuple[bool, str]:
 def open_youtube_channel(name: str) -> Tuple[bool, str]:
     """
     Открыть YouTube-канал по имени автора.
-    Сначала пробуем @handle (если имя без пробелов), потом поиск с фильтром каналов.
+    FIX [C2]: исправлено двойное URL-кодирование (%3D%3D вместо %253D%253D).
     """
     name = name.strip()
-    # Попытка прямого перехода к @handle (один слово без пробелов)
     if " " not in name:
         direct_url = f"https://www.youtube.com/@{name}"
         try:
@@ -233,11 +272,11 @@ def open_youtube_channel(name: str) -> Tuple[bool, str]:
             return True, f"Открываю канал @{name} на YouTube!"
         except Exception:
             pass
-    # Поиск с фильтром «Каналы» (sp=EgIQAg%3D%3D)
+    # Поиск с фильтром «Каналы» — правильное кодирование
     url = (
         f"https://www.youtube.com/results"
         f"?search_query={name.replace(' ', '+')}"
-        f"&sp=EgIQAg%253D%253D"
+        f"&sp=EgIQAg%3D%3D"
     )
     try:
         webbrowser.open(url)
@@ -336,9 +375,9 @@ def extract_prompt(text: str) -> str:
 
 # ── Паттерны команд ───────────────────────────────────────────────────────────
 
-_VOLUME_SET_RE  = re.compile(
+# FIX [M3]: объединены дублирующиеся паттерны громкости в один универсальный
+_VOLUME_RE = re.compile(
     r"(?:сделай|поставь|установи|громкость|звук)\s+(?:звук|громкость)?\s*(?:на\s+)?(\d+)\s*%?", re.I)
-_VOLUME_RE      = re.compile(r"(?:громкость|звук)\s+(\d+)\s*%?", re.I)
 _YT_SEARCH_RE   = re.compile(
     r"(?:найди|открой|включи|ищи)\s+(?:на\s+)?youtube\s+(.+)|youtube\s+(.+)", re.I)
 _YT_CHANNEL_RE  = re.compile(
@@ -365,9 +404,6 @@ def try_parse_command(text: str) -> Optional[Tuple[bool, str]]:
     if _RESTORE_RE.search(t):
         return restore_all_windows()
 
-    m = _VOLUME_SET_RE.search(t)
-    if m:
-        return set_volume(int(m.group(1)))
     m = _VOLUME_RE.search(t)
     if m:
         return set_volume(int(m.group(1)))
@@ -377,30 +413,24 @@ def try_parse_command(text: str) -> Optional[Tuple[bool, str]]:
     if re.search(r"(?:включи|переключи)\s+(?:микрофон|мик)", t, re.I):
         return toggle_microphone()
 
-    # YouTube-канал по имени (НОВОЕ — проверяем ПЕРЕД общим youtube-поиском)
     m = _YT_CHANNEL_RE.search(text)
     if m:
         return open_youtube_channel(m.group(1).strip())
 
-    # YouTube поиск
     m = _YT_SEARCH_RE.search(t)
     if m:
         return open_youtube(m.group(1) or m.group(2) or "")
 
-    # YouTube без запроса
     if re.search(r"(?:открой|запусти)\s+(?:youtube|ютуб)\s*$", t, re.I):
         return open_youtube()
 
-    # Открыть URL
     m = _OPEN_URL_RE.search(text)
     if m:
         return open_url(m.group(1))
 
-    # Браузер
     if re.search(r"(?:открой|запусти)\s+(?:браузер|хром|firefox|edge|opera)\s*$", t, re.I):
         return open_browser()
 
-    # Системные
     if re.search(r"(?:заблокируй|lock)\s+(?:экран|компьютер)", t, re.I):
         return lock_screen()
     if re.search(r"(?:выключи|shutdown)\s+(?:компьютер|пк|комп)", t, re.I):
@@ -412,17 +442,14 @@ def try_parse_command(text: str) -> Optional[Tuple[bool, str]]:
     if re.search(r"спящий режим|усыпи", t, re.I):
         return sleep_computer()
 
-    # Закрыть приложение
     m = _CLOSE_APP_RE.search(t)
     if m:
         return close_application(m.group(1).strip())
 
-    # Умный запуск приложений
     for app_key in APP_MAP:
         if app_key in t and _is_real_launch_command(text, app_key):
             return open_application(app_key)
 
-    # Общая команда "открой X"
     m = _OPEN_APP_RE.search(t)
     if m:
         app_name = m.group(1).strip()
