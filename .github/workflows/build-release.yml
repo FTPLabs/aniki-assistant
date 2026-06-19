@@ -37,16 +37,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: aniki_assistant/dist
-          key: ${{ runner.os }}-dist-v8-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
+          key: ${{ runner.os }}-dist-v9-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
 
       - name: Cache PyInstaller analysis
         if: steps.cache-dist.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: aniki_assistant/build
-          key: ${{ runner.os }}-pyinstaller-v8-${{ hashFiles('aniki_assistant/aniki.spec') }}
+          key: ${{ runner.os }}-pyinstaller-v9-${{ hashFiles('aniki_assistant/aniki.spec') }}
           restore-keys: |
-            ${{ runner.os }}-pyinstaller-v8-
+            ${{ runner.os }}-pyinstaller-v9-
 
       - name: Install build tools
         run: |
