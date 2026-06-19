@@ -1,6 +1,6 @@
 """
-ИИ-движок Аники v2.2 — Ollama + DuckDuckGo + обучение + память.
-FIX: устранено дублирование chat()/chat_stream(), стриминг TTS.
+ИИ-движок Аники v2.3 — qwen2.5:7b + краткие ответы + память + поиск.
+FIX: DEFAULT_MODEL → qwen2.5:7b (лучший для русского языка).
 """
 
 import requests
@@ -24,9 +24,16 @@ from .learning import (
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_MODEL   = "mistral"
-FALLBACK_MODELS = ["mistral", "llama3.2", "llama3.2:3b", "llama3", "llama2",
-                   "gemma2", "phi3", "deepseek"]
+
+# qwen2.5:7b — лучший для русского языка и кратких ответов
+DEFAULT_MODEL = "qwen2.5:7b"
+
+# Порядок приоритета: qwen2.5 → llama3.2 → mistral → другие
+FALLBACK_MODELS = [
+    "qwen2.5:7b", "qwen2.5:3b", "qwen2.5",
+    "llama3.2:3b", "llama3.2",
+    "mistral", "gemma2", "phi3", "deepseek", "llama3", "llama2",
+]
 
 _search_available: Optional[bool] = None
 _search_checked_at: float = 0.0
@@ -36,7 +43,6 @@ def _try_search(query: str) -> Optional[str]:
     global _search_available, _search_checked_at
     import time
     now = time.time()
-    # Перепроверяем доступность раз в 5 минут
     if _search_available is None or (now - _search_checked_at) > 300:
         try:
             from .search import is_online
@@ -78,7 +84,7 @@ def get_best_model() -> str:
         return DEFAULT_MODEL
     for preferred in FALLBACK_MODELS:
         for model in available:
-            if preferred in model.lower():
+            if preferred.split(":")[0] in model.lower():
                 return model
     return available[0]
 
@@ -98,7 +104,7 @@ _REMIND_CHECK_RE = re.compile(
     r"(?:напомни|что\s+ты\s+знаешь\s+обо\s+мне|что\s+ты\s+помнишь)", re.I
 )
 _NAME_RE = re.compile(
-    r"(?:меня\s+зовут|моё\s+имя)\s+([a-zа-яёA-ZА-ЯЁ]+)", re.I  # FIX: re.I + без лишнего lower()
+    r"(?:меня\s+зовут|моё\s+имя)\s+([a-zа-яёA-ZА-ЯЁ]+)", re.I
 )
 
 
@@ -109,16 +115,15 @@ def _handle_forget(text: str) -> Optional[str]:
             if kind == "all":
                 n = clear_conversation_history()
                 clear_all_facts()
-                return f"Готово, бро! Стёр всю память — удалил {n} сообщений. Fresh start!"
+                return f"Стёр всё — {n} сообщений. Fresh start!"
             elif kind == "last":
                 n = forget_last_messages(4)
-                return f"Забыл последний обмен ({n} сообщений). Come on!"
+                return f"Забыл последний обмен ({n} сообщ.). Come on!"
             elif kind == "topic" and m.lastindex:
                 topic = m.group(1).strip().rstrip(".,!?")
                 total = forget_messages_about(topic) + forget_facts_about(topic)
-                if total:
-                    return f"Забыл всё про '{topic}' — удалил {total} записей. Это между нами, бро!"
-                return f"Ничего не нашёл про '{topic}'. Может, мы и не говорили об этом?"
+                return (f"Забыл про '{topic}' — {total} записей."
+                        if total else f"Ничего не нашёл про '{topic}'.")
     return None
 
 
@@ -126,8 +131,8 @@ def _handle_memory_show(text: str) -> Optional[str]:
     if _REMIND_CHECK_RE.search(text):
         context = build_context_string()
         if context:
-            return f"Вот что я о тебе знаю, бро:\n\n{context}"
-        return "Я пока ничего особого о тебе не знаю. Расскажи — например, как тебя зовут!"
+            return f"Вот что знаю о тебе:\n\n{context}"
+        return "Пока ничего не знаю о тебе. Расскажи!"
     return None
 
 
@@ -137,7 +142,6 @@ def _handle_prompt_request(text: str) -> Optional[str]:
 
 
 def _check_memory_commands(text: str):
-    """FIX: используем re.I вместо поиска в text_lower."""
     triggers = [
         "запомни", "не забудь", "сохрани",
         "меня зовут", "моё имя", "я работаю",
@@ -147,7 +151,7 @@ def _check_memory_commands(text: str):
     text_lower = text.lower()
     for trigger in triggers:
         if trigger in text_lower:
-            nm = _NAME_RE.search(text)  # FIX: ищем в оригинальном тексте с re.I
+            nm = _NAME_RE.search(text)
             if nm:
                 name = nm.group(1).strip().capitalize()
                 set_profile("name", name)
@@ -198,25 +202,26 @@ class AnikiAI:
     def _build_prompt_messages(self, topic: str) -> List[Dict]:
         return [
             {"role": "system", "content": (
-                "Ты — эксперт по написанию промптов для нейросетей. "
-                "Напиши чёткий, подробный промпт на русском языке. "
-                "Только промпт — без объяснений, без предисловий. Начни сразу с промпта."
+                "Ты — эксперт по промптам для нейросетей. "
+                "Напиши чёткий промпт на русском. "
+                "Только промпт — без объяснений. Начни сразу с промпта."
             )},
-            {"role": "user", "content": f"Напиши промпт для: {topic}"},
+            {"role": "user", "content": f"Промпт для: {topic}"},
         ]
 
     def _ollama_request(self, messages: List[Dict], stream: bool = False):
         return requests.post(
             f"{OLLAMA_BASE_URL}/api/chat",
             json={
-                "model":   self.model,
+                "model":    self.model,
                 "messages": messages,
                 "stream":   stream,
                 "options": {
-                    "temperature":  0.75,
-                    "top_p":        0.9,
-                    "num_ctx":      8192,
+                    "temperature":    0.7,
+                    "top_p":          0.9,
+                    "num_ctx":        8192,
                     "repeat_penalty": 1.1,
+                    "num_predict":    256,  # краткость — ограничиваем длину ответа
                 },
             },
             stream=stream,
@@ -224,13 +229,9 @@ class AnikiAI:
         )
 
     def _pre_process(self, user_message: str):
-        """
-        Единая предобработка для chat() и chat_stream().
-        Возвращает (early_reply | None, prompt_topic | None, search_context, learned).
-        """
         if not self._initialized:
             if not self.initialize():
-                return "Бро, Ollama не запущен! Установи Ollama и запусти модель.", None, "", None
+                return "Бро, Ollama не запущен! Установи и запусти модель.", None, "", None
 
         feedback = check_feedback(user_message)
         if feedback == "positive":
@@ -240,7 +241,7 @@ class AnikiAI:
             add_message("assistant", reply)
             return reply, None, "", None
         if feedback == "negative":
-            reply = "Понял, бро! Запомнил — в следующий раз сделаю иначе."
+            reply = "Понял! Запомнил — исправлюсь."
             add_message("user", user_message)
             add_message("assistant", reply)
             return reply, None, "", None
@@ -305,9 +306,9 @@ class AnikiAI:
             return "Что-то пошло не так. Let me try again!"
 
         except requests.Timeout:
-            return "Думаю слишком долго... No pain, no gain — подожди!"
+            return "Думаю... No pain no gain — подожди!"
         except requests.ConnectionError:
-            return "Не могу подключиться к Ollama. Убедись что он запущен!"
+            return "Ollama недоступен. Убедись что запущен!"
         except Exception as e:
             logger.error(f"Ошибка чата: {e}")
             return f"Ошибка: {e}"
