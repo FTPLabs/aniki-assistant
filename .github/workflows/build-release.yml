@@ -24,45 +24,41 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      # ── Кэш 1: установленные пакеты (site-packages) ────────────────────────
-      # Ключ: ОС + хэш requirements.txt → при изменении зависимостей кэш сбрасывается
-      - name: Cache site-packages
-        id: cache-pkgs
+      # FIX [M4]: убрали хардкод пути 3.11.9 → используем pip cache от setup-python
+      # Кэш pip (зависимости) — сбрасывается при изменении requirements.txt
+      - name: Cache pip packages
         uses: actions/cache@v4
         with:
-          path: C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages
-          key: ${{ runner.os }}-py311-site-v2-${{ hashFiles('aniki_assistant/requirements.txt') }}
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-v3-${{ hashFiles('aniki_assistant/requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-py311-site-v2-
+            ${{ runner.os }}-pip-v3-
 
-      # ── Кэш 2: PyInstaller build/ (анализ torch — самый медленный шаг) ──────
+      # Кэш PyInstaller build/ (анализ torch — самый медленный шаг)
       - name: Cache PyInstaller analysis
         uses: actions/cache@v4
         with:
           path: aniki_assistant/build
-          key: ${{ runner.os }}-pyinstaller-v2-${{ hashFiles('aniki_assistant/aniki.spec') }}
+          key: ${{ runner.os }}-pyinstaller-v3-${{ hashFiles('aniki_assistant/aniki.spec') }}
           restore-keys: |
-            ${{ runner.os }}-pyinstaller-v2-
+            ${{ runner.os }}-pyinstaller-v3-
 
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
           pip install "pyinstaller==6.4.0"
 
-      # Устанавливаем пакеты ТОЛЬКО если кэш site-packages промахнулся
       - name: Install runtime deps (CPU torch)
-        if: steps.cache-pkgs.outputs.cache-hit != 'true'
         run: |
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install "PyQt6>=6.6.0" requests numpy psutil sounddevice soundfile
           pip install "faster-whisper>=1.0.0" pyttsx3 pygame "Pillow>=10.0.0"
-          pip install pycaw comtypes pywin32 webrtcvad pyaudio
+          pip install pycaw comtypes pywin32 webrtcvad-wheels pyaudio
 
       - name: Create app icon
         working-directory: aniki_assistant
         run: python create_icon_ci.py
 
-      # Сборка: если build/ кэширован — PyInstaller пропускает анализ, ~5 мин вместо 30
       - name: Bundle with PyInstaller
         working-directory: aniki_assistant
         run: pyinstaller aniki.spec --noconfirm
@@ -111,11 +107,22 @@ jobs:
           body: |
             ## Аники ${{ github.ref_name }}
 
-            **Исправления v2.3.3:**
-            - [CRITICAL] Бесконечный спаун процессов при запуске — исправлен
-              - `multiprocessing.freeze_support()` добавлен первой строкой `main.py`
-              - `auto_setup.py`: pip-вызовы в frozen exe пропускаются (был infinite loop)
-            - Оптимизация CI: кэш site-packages + кэш PyInstaller build/ (~10 мин вместо 40)
+            **Исправления v2.4.0:**
+            - [C1] Race condition SQLite: learning.py использует _db_lock
+            - [C2] YouTube-каналы: исправлено двойное URL-кодирование (%3D%3D)
+            - [C3] XTTS: реализовано скачивание billy reference audio
+            - [C4] avatar_overlay: QPainterPath перенесён из paintEvent в static import
+            - [H1] ai_engine: _init_lock + _search_lock для thread safety
+            - [H2] toggle_microphone: реальное управление через pycaw
+            - [H3] APP_MAP: glob.glob раскрывает wildcard пути
+            - [H4] learning.py: try/finally во всех DB-функциях
+            - [H5] memory._exec(script=True): не возвращает -1 rowcount
+            - [M1] get_tts_backend: не дублирует xtts/silero fallback
+            - [M3] Удалён дублирующийся _VOLUME_RE
+            - [M4] CI: убран хардкод пути Python 3.11.9
+            - [M5] StreamTTS: __del__ + stop() для корректной остановки
+            - [L1] search.py: List[str] для Python 3.8+ совместимости
+            - [L2] _seed_default_reminders: использует _exec()
 
             **Установка:**
             1. Установи [Ollama](https://ollama.com)
