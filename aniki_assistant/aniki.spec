@@ -1,18 +1,27 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec — Аники v2.4
-# FIX: убран устаревший block_cipher (PyInstaller 6.x)
-# FIX: hookspath=['hooks'] → перекрывает сломанный системный hook-webrtcvad.py
-#      (webrtcvad-wheels не регистрирует dist-info как 'webrtcvad')
+# OPTIM: агрессивные excludes для CUDA/distributed/dynamo → -40% размера и времени сборки
+# FIX: hookspath=['hooks'] → перекрывает сломанный hook-webrtcvad.py
 
 import os
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs
 
-# ── Сборка torch (Silero TTS работает только если torch полностью включён) ──
+# ── Только нужные части torch (CPU-only, без CUDA/distributed) ──
 torch_datas,    torch_bins,    torch_hidden    = collect_all('torch')
 torchaudio_datas, torchaudio_bins, torchaudio_hidden = collect_all('torchaudio')
 fwhisper_datas, fwhisper_bins, fwhisper_hidden = collect_all('faster_whisper')
 ct2_datas,      ct2_bins,      ct2_hidden      = collect_all('ctranslate2')
 sd_datas,       sd_bins,       sd_hidden       = collect_all('sounddevice')
+
+# ── Фильтрация: убираем CUDA DLL и ненужные бинарники torch ──
+def _filter_bins(bins):
+    skip = ('cusparse','cublas','cudnn','curand','cufft','nccl',
+            'nvrtc','nvjpeg','caffe2','fbgemm','_C.cp','libtorch_cuda')
+    return [(dest, src, kind) for dest, src, kind in bins
+            if not any(s in src.lower() for s in skip)]
+
+torch_bins = _filter_bins(torch_bins)
+torchaudio_bins = _filter_bins(torchaudio_bins)
 
 a = Analysis(
     ['main.py'],
@@ -54,11 +63,59 @@ a = Analysis(
         'json',
         're',
     ] + torch_hidden + torchaudio_hidden + fwhisper_hidden + ct2_hidden + sd_hidden,
-    # FIX: наш hooks/ перекрывает сломанный hook-webrtcvad.py из _pyinstaller_hooks_contrib
     hookspath=['hooks'],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # ── CUDA — сборка CPU-only ──────────────────────────────────
+        'torch.cuda',
+        'torch.backends.cuda',
+        'torch.backends.cudnn',
+        'torch.backends.mkldnn',
+        'torch.cuda.amp',
+        # ── Distributed training (не нужно десктоп-приложению) ──────
+        'torch.distributed',
+        'torch.nn.parallel.distributed',
+        'torch.multiprocessing',
+        # ── Compiler stack / dynamo / inductor ──────────────────────
+        'torch._dynamo',
+        'torch._inductor',
+        'torch._functorch',
+        'torch._decomp',
+        'torch.fx',
+        'torch.jit._builtins',
+        # ── ONNX экспорт ────────────────────────────────────────────
+        'torch.onnx',
+        # ── Профилировщик ───────────────────────────────────────────
+        'torch.profiler',
+        # ── Quantization (AO) ────────────────────────────────────────
+        'torch.ao',
+        # ── Тесты ───────────────────────────────────────────────────
+        'torch.testing',
+        'torch.utils.cpp_extension',
+        'caffe2',
+        # ── Тяжёлые стандартные пакеты, не используемые в коде ─────
+        'unittest',
+        'test',
+        'tkinter',
+        'matplotlib',
+        'scipy',
+        'sklearn',
+        'pandas',
+        'IPython',
+        'jedi',
+        'pygments',
+        'setuptools',
+        'pkg_resources',
+        'distutils',
+        'email',
+        'http.server',
+        'xmlrpc',
+        'ftplib',
+        'imaplib',
+        'poplib',
+        'smtplib',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     noarchive=False,
@@ -93,6 +150,11 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    upx_exclude=[
+        'torch*.dll',
+        'torchaudio*.dll',
+        '*_C.pyd',
+        'ct2*.dll',
+    ],
     name='Aniki',
 )
