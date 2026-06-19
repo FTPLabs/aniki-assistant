@@ -88,15 +88,19 @@ jobs:
           }
           if (-not $found) { Write-Error "Aniki.exe not found!"; exit 1 }
 
-      # Smoke test: запускаем EXE на 5 сек.
-      # Краш сразу = ошибка импорта / missing DLL. Всё ещё работает = GUI OK.
+      # Smoke test: запуск EXE на 5 сек.
+      # - Краш сразу (exit != 0) = missing DLL / ошибка импорта / падение при старте.
+      # - Всё ещё работает = GUI OK.
+      # - Первые строки stdout/stderr всегда печатаются в лог для диагностики.
       - name: Smoke test EXE (no crash on startup)
         shell: pwsh
         run: |
           $paths = @("aniki_assistant/dist/Aniki/Aniki.exe", "aniki_assistant/dist/Aniki.exe")
           $exe = $null
           foreach ($p in $paths) { if (Test-Path $p) { $exe = (Resolve-Path $p).Path; break } }
-          Write-Host "Smoke test: $exe"
+          Write-Host "=== Smoke test: $exe ==="
+
+          # Запускаем с захватом stdout + stderr
           $pinfo = New-Object System.Diagnostics.ProcessStartInfo
           $pinfo.FileName = $exe
           $pinfo.RedirectStandardError = $true
@@ -105,21 +109,42 @@ jobs:
           $pinfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
           $proc = New-Object System.Diagnostics.Process
           $proc.StartInfo = $pinfo
+
+          # Буферы для асинхронного чтения вывода
+          $outLines = [System.Collections.Generic.List[string]]::new()
+          $errLines = [System.Collections.Generic.List[string]]::new()
+          $proc.add_OutputDataReceived({ param($s,$e) if ($e.Data) { $outLines.Add($e.Data) } })
+          $proc.add_ErrorDataReceived({ param($s,$e) if ($e.Data) { $errLines.Add($e.Data) } })
+
           $proc.Start() | Out-Null
+          $proc.BeginOutputReadLine()
+          $proc.BeginErrorReadLine()
+
+          # Ждём 5 секунд
           $exited = $proc.WaitForExit(5000)
+
+          # Печатаем первые 30 строк stdout и весь stderr — всегда
+          if ($outLines.Count -gt 0) {
+            Write-Host "--- STDOUT (first 30 lines) ---"
+            $outLines | Select-Object -First 30 | ForEach-Object { Write-Host $_ }
+          }
+          if ($errLines.Count -gt 0) {
+            Write-Host "--- STDERR ---"
+            $errLines | ForEach-Object { Write-Host $_ }
+          }
+
           if ($exited) {
-            $out = $proc.StandardOutput.ReadToEnd()
-            $err = $proc.StandardError.ReadToEnd()
-            if ($out) { Write-Host "STDOUT: $out" }
-            if ($err) { Write-Host "STDERR: $err" }
-            if ($proc.ExitCode -ne 0) {
-              Write-Error "Smoke test FAILED: exit code $($proc.ExitCode)"
+            $code = $proc.ExitCode
+            if ($code -ne 0) {
+              Write-Error "SMOKE TEST FAILED: EXE exited with code $code (see STDERR above)"
               exit 1
             }
             Write-Host "OK: EXE exited cleanly (code 0)"
           } else {
-            Write-Host "OK: EXE still running after 5s (GUI app)"
-            $proc.Kill(); $proc.WaitForExit(2000) | Out-Null
+            # GUI приложение продолжает работать — это нормально
+            Write-Host "OK: EXE still running after 5s (GUI app healthy)"
+            $proc.Kill()
+            $proc.WaitForExit(2000) | Out-Null
           }
 
       - name: Zip release bundle
