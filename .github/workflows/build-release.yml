@@ -30,9 +30,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-v4-${{ hashFiles('aniki_assistant/requirements.txt') }}
+          key: ${{ runner.os }}-pip-v5-${{ hashFiles('aniki_assistant/requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-pip-v4-
+            ${{ runner.os }}-pip-v5-
 
       # ── УРОВЕНЬ 2: кэш готового dist/ ──────────────────────────────────────
       # Если spec И requirements не изменились → PyInstaller полностью пропускается
@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: aniki_assistant/dist
-          key: ${{ runner.os }}-dist-v4-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt') }}
+          key: ${{ runner.os }}-dist-v5-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
 
       # ── УРОВЕНЬ 3: кэш анализа PyInstaller ────────────────────────────────
       # При cache-miss ускоряет повторный анализ
@@ -51,9 +51,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: aniki_assistant/build
-          key: ${{ runner.os }}-pyinstaller-v4-${{ hashFiles('aniki_assistant/aniki.spec') }}
+          key: ${{ runner.os }}-pyinstaller-v5-${{ hashFiles('aniki_assistant/aniki.spec') }}
           restore-keys: |
-            ${{ runner.os }}-pyinstaller-v4-
+            ${{ runner.os }}-pyinstaller-v5-
 
       # ── Установка зависимостей ─────────────────────────────────────────────
       - name: Install build tools
