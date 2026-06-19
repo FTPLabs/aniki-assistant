@@ -138,6 +138,16 @@ def main():
         stt_enabled=stt_available,
     )
 
+    # ── Микрофон: VoiceListener → кнопка ─────────────────────────────────────
+    if stt_available:
+        try:
+            from core.speech import VoiceListener
+            _voice_listener = VoiceListener(callback=chat_window.on_voice_input)
+            chat_window.set_voice_listener(_voice_listener)
+            logger.info("VoiceListener подключён ✓")
+        except Exception as e:
+            logger.warning(f"VoiceListener не создан: {e}")
+
     splash_msg("Запуск аватара Билли...")
     avatar_overlay = None
     try:
