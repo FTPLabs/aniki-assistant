@@ -56,21 +56,21 @@ def _cache_get(key: str) -> Optional[str]:
 
 _CACHE_MAX_SIZE = 200  # FIX [M1]: лимит кэша
 
-  def _cache_set(key: str, value: str):
-      with _CACHE_LOCK:
-          if len(_QUICK_CACHE) >= _CACHE_MAX_SIZE:
-              now = time.time()
-              stale = [k for k, t in _QUICK_CACHE_TTL.items() if now - t >= _CACHE_TTL]
-              for k in stale:
-                  _QUICK_CACHE.pop(k, None)
-                  _QUICK_CACHE_TTL.pop(k, None)
-              if len(_QUICK_CACHE) >= _CACHE_MAX_SIZE:
-                  oldest = sorted(_QUICK_CACHE_TTL, key=lambda k: _QUICK_CACHE_TTL[k])[:50]
-                  for k in oldest:
-                      _QUICK_CACHE.pop(k, None)
-                      _QUICK_CACHE_TTL.pop(k, None)
-          _QUICK_CACHE[key] = value
-          _QUICK_CACHE_TTL[key] = time.time()
+def _cache_set(key: str, value: str):
+    with _CACHE_LOCK:
+        if len(_QUICK_CACHE) >= _CACHE_MAX_SIZE:
+            now = time.time()
+            stale = [k for k, t in _QUICK_CACHE_TTL.items() if now - t >= _CACHE_TTL]
+            for k in stale:
+                _QUICK_CACHE.pop(k, None)
+                _QUICK_CACHE_TTL.pop(k, None)
+            if len(_QUICK_CACHE) >= _CACHE_MAX_SIZE:
+                oldest = sorted(_QUICK_CACHE_TTL, key=lambda k: _QUICK_CACHE_TTL[k])[:50]
+                for k in oldest:
+                    _QUICK_CACHE.pop(k, None)
+                    _QUICK_CACHE_TTL.pop(k, None)
+        _QUICK_CACHE[key] = value
+        _QUICK_CACHE_TTL[key] = time.time()
 
 
 _search_lock = threading.Lock()
