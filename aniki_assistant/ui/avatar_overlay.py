@@ -1,6 +1,7 @@
 """
 Аватар Билли Херрингтона v2.2 — реальное фото + анимация состояний.
-Скачивает фото при первом запуске. Показывает рамку-индикатор состояния.
+FIX [C4]: QPainterPath импортируется статически вверху файла, а не через
+          __import__() внутри paintEvent (вызывался 20 раз/сек).
 """
 
 import logging
@@ -22,7 +23,8 @@ try:
     from PyQt6.QtWidgets import QWidget, QApplication, QLabel, QVBoxLayout
     from PyQt6.QtCore    import Qt, QTimer, QPoint, QPropertyAnimation, QEasingCurve, pyqtSignal
     from PyQt6.QtGui     import (QPainter, QColor, QPixmap, QBrush,
-                                  QPen, QFont, QMouseEvent, QImage)
+                                  QPen, QFont, QMouseEvent, QImage,
+                                  QPainterPath)   # FIX [C4]: статический импорт
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
@@ -48,19 +50,17 @@ def _download_photo():
         return False
 
 
-# Состояния аватара
 class AvatarState:
     IDLE      = "idle"
     THINKING  = "thinking"
     SPEAKING  = "speaking"
     LISTENING = "listening"
 
-# Цвета рамки для каждого состояния
 STATE_COLORS = {
-    AvatarState.IDLE:      "#ff9e44",   # оранжевый
-    AvatarState.THINKING:  "#7755ff",   # фиолетовый
-    AvatarState.SPEAKING:  "#44ccff",   # голубой
-    AvatarState.LISTENING: "#44ff88",   # зелёный
+    AvatarState.IDLE:      "#ff9e44",
+    AvatarState.THINKING:  "#7755ff",
+    AvatarState.SPEAKING:  "#44ccff",
+    AvatarState.LISTENING: "#44ff88",
 }
 
 STATE_LABELS = {
@@ -79,7 +79,7 @@ if PYQT_AVAILABLE:
         def __init__(self, parent=None):
             super().__init__(parent)
             self._state       = AvatarState.IDLE
-            self._pixmap: QPixmap | None = None
+            self._pixmap = None
             self._pulse       = 0.0
             self._pulse_dir   = 1
             self._border_color = QColor(STATE_COLORS[AvatarState.IDLE])
@@ -87,12 +87,10 @@ if PYQT_AVAILABLE:
             self.setFixedSize(AVATAR_SIZE + BORDER_WIDTH * 2 + 4,
                               AVATAR_SIZE + BORDER_WIDTH * 2 + 4)
 
-            # Таймер анимации пульса
             self._timer = QTimer(self)
             self._timer.timeout.connect(self._tick)
-            self._timer.start(50)  # 20 fps
+            self._timer.start(50)
 
-            # Загружаем фото (из кэша или скачиваем)
             self._load_photo()
 
         def _load_photo(self):
@@ -103,12 +101,10 @@ if PYQT_AVAILABLE:
                     Qt.TransformationMode.SmoothTransformation,
                 )
             else:
-                # Скачиваем в фоне
                 threading.Thread(target=self._download_and_reload, daemon=True).start()
 
         def _download_and_reload(self):
             if _download_photo():
-                # Перезагружаем в главном потоке
                 QTimer.singleShot(0, self._load_photo)
 
         def set_state(self, state: str):
@@ -137,7 +133,6 @@ if PYQT_AVAILABLE:
             cy = self.height() // 2
             r  = AVATAR_SIZE   // 2
 
-            # Фоновый тёмный круг
             p.setBrush(QBrush(QColor("#0d0d1e")))
             p.setPen(Qt.PenStyle.NoPen)
             p.drawEllipse(cx - r - BORDER_WIDTH - 2,
@@ -145,7 +140,6 @@ if PYQT_AVAILABLE:
                           (r + BORDER_WIDTH + 2) * 2,
                           (r + BORDER_WIDTH + 2) * 2)
 
-            # Анимированная рамка
             alpha = int(180 + self._pulse * 75)
             border_c = QColor(self._border_color)
             border_c.setAlpha(alpha)
@@ -154,14 +148,13 @@ if PYQT_AVAILABLE:
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(cx - r - 2, cy - r - 2, (r + 2) * 2, (r + 2) * 2)
 
-            # Фото (круглая маска)
             p.setPen(Qt.PenStyle.NoPen)
             if self._pixmap:
                 p.save()
-                clip_path = __import__("PyQt6.QtGui", fromlist=["QPainterPath"]).QPainterPath()
+                # FIX [C4]: QPainterPath импортирован статически вверху — не __import__()
+                clip_path = QPainterPath()
                 clip_path.addEllipse(cx - r, cy - r, r * 2, r * 2)
                 p.setClipPath(clip_path)
-                # Центрируем фото
                 pw = self._pixmap.width()
                 ph = self._pixmap.height()
                 px = cx - pw // 2
@@ -169,7 +162,6 @@ if PYQT_AVAILABLE:
                 p.drawPixmap(px, py, self._pixmap)
                 p.restore()
             else:
-                # Заглушка пока фото не загружено
                 p.setBrush(QBrush(QColor("#1e1e32")))
                 p.drawEllipse(cx - r, cy - r, r * 2, r * 2)
                 p.setPen(QColor("#ff9e44"))
@@ -193,7 +185,7 @@ if PYQT_AVAILABLE:
                 Qt.WindowType.Tool,
             )
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-            self._drag_pos: QPoint | None = None
+            self._drag_pos = None
 
             layout = QVBoxLayout(self)
             layout.setContentsMargins(6, 6, 6, 6)
