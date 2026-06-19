@@ -1,12 +1,13 @@
 """
 ИИ-движок Аники v2.3 — qwen2.5:7b + краткие ответы + память + поиск.
-FIX: DEFAULT_MODEL → qwen2.5:7b (лучший для русского языка).
+FIX [C1/H1]: _init_lock + _search_lock — thread-safe доступ к _initialized и search globals.
 """
 
 import requests
 import json
 import re
 import logging
+import threading
 from typing import Optional, List, Dict, Generator
 
 from .personality import SYSTEM_PROMPT, get_phrase
@@ -25,16 +26,16 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 
-# qwen2.5:7b — лучший для русского языка и кратких ответов
 DEFAULT_MODEL = "qwen2.5:7b"
 
-# Порядок приоритета: qwen2.5 → llama3.2 → mistral → другие
 FALLBACK_MODELS = [
     "qwen2.5:7b", "qwen2.5:3b", "qwen2.5",
     "llama3.2:3b", "llama3.2",
     "mistral", "gemma2", "phi3", "deepseek", "llama3", "llama2",
 ]
 
+# FIX [H1]: защищаем глобалы поиска отдельным локом
+_search_lock = threading.Lock()
 _search_available: Optional[bool] = None
 _search_checked_at: float = 0.0
 
@@ -43,14 +44,16 @@ def _try_search(query: str) -> Optional[str]:
     global _search_available, _search_checked_at
     import time
     now = time.time()
-    if _search_available is None or (now - _search_checked_at) > 300:
-        try:
-            from .search import is_online
-            _search_available = is_online()
-            _search_checked_at = now
-        except Exception:
-            _search_available = False
-    if not _search_available:
+    with _search_lock:
+        if _search_available is None or (now - _search_checked_at) > 300:
+            try:
+                from .search import is_online
+                _search_available = is_online()
+                _search_checked_at = now
+            except Exception:
+                _search_available = False
+        available = _search_available
+    if not available:
         return None
     try:
         from .search import search
@@ -88,8 +91,6 @@ def get_best_model() -> str:
                 return model
     return available[0]
 
-
-# ── Паттерны команд ───────────────────────────────────────────────────────────
 
 _FORGET_PATTERNS = [
     (re.compile(r"забудь\s+(?:про\s+|о\s+)?всё|очисти\s+память|удали\s+(?:всю\s+)?(?:историю|память)", re.I), "all"),
@@ -175,17 +176,22 @@ class AnikiAI:
     def __init__(self, model: Optional[str] = None):
         self.model = model
         self._initialized = False
+        # FIX [H1]: лок для безопасного доступа к _initialized из разных потоков
+        self._init_lock = threading.Lock()
         init_learning_table()
 
     def initialize(self) -> bool:
-        if not check_ollama_available():
-            logger.error("Ollama не запущен!")
-            return False
-        if not self.model:
-            self.model = get_best_model()
-        logger.info(f"Модель: {self.model}")
-        self._initialized = True
-        return True
+        with self._init_lock:
+            if self._initialized:
+                return True
+            if not check_ollama_available():
+                logger.error("Ollama не запущен!")
+                return False
+            if not self.model:
+                self.model = get_best_model()
+            logger.info(f"Модель: {self.model}")
+            self._initialized = True
+            return True
 
     def _build_messages(self, user_message: str, search_context: str = "") -> List[Dict]:
         context = build_context_string()
@@ -221,7 +227,7 @@ class AnikiAI:
                     "top_p":          0.9,
                     "num_ctx":        8192,
                     "repeat_penalty": 1.1,
-                    "num_predict":    256,  # краткость — ограничиваем длину ответа
+                    "num_predict":    256,
                 },
             },
             stream=stream,
@@ -229,7 +235,9 @@ class AnikiAI:
         )
 
     def _pre_process(self, user_message: str):
-        if not self._initialized:
+        with self._init_lock:
+            initialized = self._initialized
+        if not initialized:
             if not self.initialize():
                 return "Бро, Ollama не запущен! Установи и запусти модель.", None, "", None
 
