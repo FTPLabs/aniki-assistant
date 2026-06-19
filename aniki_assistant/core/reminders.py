@@ -57,10 +57,30 @@ class ReminderSystem:
         while self._running:
             try:
                 self._check_db_reminders()
+                self._check_gaming_session()  # FIX [H2]
             except Exception as e:
                 logger.error(f"Ошибка напоминаний: {e}")
             time.sleep(self.check_interval)
 
+
+      def _check_gaming_session(self):
+          """FIX [H2]: предупреждение о длинной игровой сессии."""
+          if not self._gaming_session_start:
+              return
+          elapsed_min = (datetime.now() - self._gaming_session_start).total_seconds() / 60
+          if elapsed_min < self._gaming_alert_after_min:
+              return
+          if self._gaming_reminder_sent_at:
+              since_last = (datetime.now() - self._gaming_reminder_sent_at).total_seconds() / 60
+              if since_last < 30:
+                  return
+          self._gaming_reminder_sent_at = datetime.now()
+          hrs  = int(elapsed_min // 60)
+          mins = int(elapsed_min % 60)
+          t    = f"{hrs}ч {mins}мин" if hrs else f"{int(elapsed_min)}мин"
+          self.on_reminder("Игровой перерыв!",
+              f"Бро, ты уже {t} за игрой! Встань, разомнись — no pain no gain!")
+  
     def _check_db_reminders(self):
         """
         FIX: Если last_triggered = NULL и reminder без конкретного времени —
