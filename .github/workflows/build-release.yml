@@ -1,153 +1,185 @@
 name: Build Windows EXE
 
-on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  workflow_dispatch:
+  on:
+    push:
+      branches: [main]
+      tags: ['v*']
+    workflow_dispatch:
 
-permissions:
-  contents: write
+  permissions:
+    contents: write
 
-jobs:
-  build:
-    runs-on: windows-latest
-    timeout-minutes: 120
+  jobs:
+    build:
+      runs-on: windows-latest
+      timeout-minutes: 120
 
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      steps:
+        - name: Checkout repo
+          uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
+        - name: Set up Python 3.11
+          uses: actions/setup-python@v5
+          with:
+            python-version: "3.11"
+            cache: "pip"
 
-      # ── УРОВЕНЬ 1: кэш pip-пакетов ────────────────────────────────────────
-      # Сбрасывается только при изменении requirements.txt
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-v5-${{ hashFiles('aniki_assistant/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-v5-
+        # ── УРОВЕНЬ 1: кэш pip-пакетов ────────────────────────────────────────
+        - name: Cache pip packages
+          uses: actions/cache@v4
+          with:
+            path: ~\AppData\Local\pip\Cache
+            key: ${{ runner.os }}-pip-v5-${{ hashFiles('aniki_assistant/requirements.txt') }}
+            restore-keys: |
+              ${{ runner.os }}-pip-v5-
 
-      # ── УРОВЕНЬ 2: кэш готового dist/ ──────────────────────────────────────
-      # Если spec И requirements не изменились → PyInstaller полностью пропускается
-      # Экономия: ~35 мин → ~3 мин при cache-hit
-      - name: Cache PyInstaller dist (главная оптимизация)
-        id: cache-dist
-        uses: actions/cache@v4
-        with:
-          path: aniki_assistant/dist
-          key: ${{ runner.os }}-dist-v5-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
+        # ── УРОВЕНЬ 2: кэш готового dist/ ─────────────────────────────────────
+        - name: Cache PyInstaller dist (главная оптимизация)
+          id: cache-dist
+          uses: actions/cache@v4
+          with:
+            path: aniki_assistant/dist
+            key: ${{ runner.os }}-dist-v5-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
 
-      # ── УРОВЕНЬ 3: кэш анализа PyInstaller ────────────────────────────────
-      # При cache-miss ускоряет повторный анализ
-      - name: Cache PyInstaller analysis
-        if: steps.cache-dist.outputs.cache-hit != 'true'
-        uses: actions/cache@v4
-        with:
-          path: aniki_assistant/build
-          key: ${{ runner.os }}-pyinstaller-v5-${{ hashFiles('aniki_assistant/aniki.spec') }}
-          restore-keys: |
-            ${{ runner.os }}-pyinstaller-v5-
+        # ── УРОВЕНЬ 3: кэш анализа PyInstaller ───────────────────────────────
+        - name: Cache PyInstaller analysis
+          if: steps.cache-dist.outputs.cache-hit != 'true'
+          uses: actions/cache@v4
+          with:
+            path: aniki_assistant/build
+            key: ${{ runner.os }}-pyinstaller-v5-${{ hashFiles('aniki_assistant/aniki.spec') }}
+            restore-keys: |
+              ${{ runner.os }}-pyinstaller-v5-
 
-      # ── Установка зависимостей ─────────────────────────────────────────────
-      - name: Install build tools
-        run: |
-          python -m pip install --upgrade pip
-          pip install "pyinstaller==6.4.0"
+        # ── Установка зависимостей ─────────────────────────────────────────────
+        - name: Install build tools
+          run: |
+            python -m pip install --upgrade pip
+            pip install "pyinstaller==6.4.0"
 
-      - name: Install runtime deps (CPU torch)
-        run: |
-          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install "PyQt6>=6.6.0" requests numpy psutil sounddevice soundfile
-          pip install "faster-whisper>=1.0.0" pyttsx3 pygame "Pillow>=10.0.0"
-          pip install pycaw comtypes pywin32 webrtcvad-wheels pyaudio
+        - name: Install runtime deps (CPU torch)
+          run: |
+            pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+            pip install "PyQt6>=6.6.0" requests numpy psutil sounddevice soundfile
+            pip install "faster-whisper>=1.0.0" pyttsx3 pygame "Pillow>=10.0.0"
+            pip install pycaw comtypes pywin32 webrtcvad-wheels pyaudio
 
-      # ── Иконка (быстро, всегда нужна) ─────────────────────────────────────
-      - name: Create app icon
-        working-directory: aniki_assistant
-        run: python create_icon_ci.py
+        # ── Иконка ────────────────────────────────────────────────────────────
+        - name: Create app icon
+          working-directory: aniki_assistant
+          run: python create_icon_ci.py
 
-      # ── PyInstaller (пропускается при cache-hit на dist/) ─────────────────
-      - name: Bundle with PyInstaller
-        if: steps.cache-dist.outputs.cache-hit != 'true'
-        working-directory: aniki_assistant
-        run: pyinstaller aniki.spec --noconfirm
-        shell: cmd
+        # ── PyInstaller (пропускается при cache-hit) ──────────────────────────
+        - name: Bundle with PyInstaller
+          if: steps.cache-dist.outputs.cache-hit != 'true'
+          working-directory: aniki_assistant
+          run: pyinstaller aniki.spec --noconfirm
+          shell: cmd
 
-      - name: Skip build notice
-        if: steps.cache-dist.outputs.cache-hit == 'true'
-        run: echo "✓ cache-hit — PyInstaller пропущен, используем dist/ из кэша"
+        - name: Skip build notice
+          if: steps.cache-dist.outputs.cache-hit == 'true'
+          run: echo "cache-hit — PyInstaller пропущен"
 
-      # ── Проверка и упаковка ────────────────────────────────────────────────
-      - name: Verify EXE
-        shell: pwsh
-        run: |
-          $paths = @(
-            "aniki_assistant/dist/Aniki/Aniki.exe",
-            "aniki_assistant/dist/Aniki.exe"
-          )
-          $found = $false
-          foreach ($p in $paths) {
-            if (Test-Path $p) {
-              $size = [math]::Round((Get-Item $p).Length / 1MB, 1)
-              Write-Host "OK Aniki.exe: $size MB — $p"
-              $found = $true
-              break
+        # ── Проверка: файл существует и не нулевой ────────────────────────────
+        - name: Verify EXE exists
+          shell: pwsh
+          run: |
+            $paths = @(
+              "aniki_assistant/dist/Aniki/Aniki.exe",
+              "aniki_assistant/dist/Aniki.exe"
+            )
+            $found = $false
+            foreach ($p in $paths) {
+              if (Test-Path $p) {
+                $size = [math]::Round((Get-Item $p).Length / 1MB, 1)
+                Write-Host "✅ Aniki.exe: $size MB — $p"
+                $found = $true
+                break
+              }
             }
-          }
-          if (-not $found) { Write-Error "Aniki.exe not found!"; exit 1 }
+            if (-not $found) { Write-Error "Aniki.exe not found!"; exit 1 }
 
-      - name: Zip release bundle
-        shell: pwsh
-        run: |
-          if (Test-Path "aniki_assistant/dist/Aniki") {
-            Compress-Archive -Path "aniki_assistant/dist/Aniki/*" -DestinationPath "Aniki-Windows.zip"
-          } else {
-            Compress-Archive -Path "aniki_assistant/dist/Aniki.exe" -DestinationPath "Aniki-Windows.zip"
-          }
+        # ── Smoke Test: запускаем EXE на 5 сек, проверяем что не краш ─────────
+        # GUI-приложение: нормально если после 5с всё ещё работает (timeout = pass).
+        # Падение в первые 2с = ошибка импорта / missing DLL / краш при старте.
+        - name: Smoke test EXE (no crash on startup)
+          shell: pwsh
+          run: |
+            $exePaths = @(
+              "aniki_assistant/dist/Aniki/Aniki.exe",
+              "aniki_assistant/dist/Aniki.exe"
+            )
+            $exe = $null
+            foreach ($p in $exePaths) {
+              if (Test-Path $p) { $exe = (Resolve-Path $p).Path; break }
+            }
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Aniki-Windows-${{ github.sha }}
-          path: Aniki-Windows.zip
-          retention-days: 30
+            Write-Host "Запускаем: $exe"
+            # Запускаем без окна (headless-ish), захватываем stderr
+            $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+            $pinfo.FileName = $exe
+            $pinfo.RedirectStandardError = $true
+            $pinfo.RedirectStandardOutput = $true
+            $pinfo.UseShellExecute = $false
+            $pinfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+            $p = New-Object System.Diagnostics.Process
+            $p.StartInfo = $pinfo
+            $p.Start() | Out-Null
 
-      - name: Create GitHub Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: Aniki-Windows.zip
-          generate_release_notes: true
-          body: |
-            ## Аники ${{ github.ref_name }}
+            # Ждём 5 секунд
+            $crashed = $p.WaitForExit(5000)
 
-            **Исправления v2.4.0:**
-            - [C1] Race condition SQLite: learning.py использует _db_lock
-            - [C2] YouTube-каналы: исправлено двойное URL-кодирование (%3D%3D)
-            - [C3] XTTS: реализовано скачивание billy reference audio
-            - [C4] avatar_overlay: QPainterPath перенесён из paintEvent в static import
-            - [H1] ai_engine: _init_lock + _search_lock для thread safety
-            - [H2] toggle_microphone: реальное управление через pycaw
-            - [H3] APP_MAP: glob.glob раскрывает wildcard пути
-            - [H4] learning.py: try/finally во всех DB-функциях
-            - [H5] memory._exec(script=True): не возвращает -1 rowcount
-            - [M1] get_tts_backend: не дублирует xtts/silero fallback
-            - [M3] Удалён дублирующийся _VOLUME_RE
-            - [M4] CI: убран хардкод пути Python 3.11.9
-            - [M5] StreamTTS: __del__ + stop() для корректной остановки
-            - [L1] search.py: List[str] для Python 3.8+ совместимости
-            - [L2] _seed_default_reminders: использует _exec()
+            if ($crashed) {
+              # Процесс завершился раньше 5 сек — читаем вывод
+              $stderr = $p.StandardError.ReadToEnd()
+              $stdout = $p.StandardOutput.ReadToEnd()
+              Write-Host "STDOUT: $stdout"
+              Write-Host "STDERR: $stderr"
+              $code = $p.ExitCode
+              if ($code -ne 0) {
+                Write-Error "❌ Smoke test FAILED: EXE упал с кодом $code"
+                exit 1
+              } else {
+                Write-Host "✅ EXE завершился с кодом 0 (чистый выход)"
+              }
+            } else {
+              # Всё ещё работает через 5 сек — нормально для GUI-приложения
+              Write-Host "✅ Smoke test PASSED: EXE работает (GUI запущен)"
+              $p.Kill()
+              $p.WaitForExit(2000) | Out-Null
+            }
 
-            **Установка:**
-            1. Установи [Ollama](https://ollama.com)
-            2. В cmd: `ollama run mistral`
-            3. Распакуй архив, запусти `Aniki.exe`
+        # ── Упаковка ──────────────────────────────────────────────────────────
+        - name: Zip release bundle
+          shell: pwsh
+          run: |
+            if (Test-Path "aniki_assistant/dist/Aniki") {
+              Compress-Archive -Path "aniki_assistant/dist/Aniki/*" -DestinationPath "Aniki-Windows.zip"
+            } else {
+              Compress-Archive -Path "aniki_assistant/dist/Aniki.exe" -DestinationPath "Aniki-Windows.zip"
+            }
 
-            **Требования:** Windows 10/11 x64
+        - name: Upload artifact
+          uses: actions/upload-artifact@v4
+          with:
+            name: Aniki-Windows-${{ github.sha }}
+            path: Aniki-Windows.zip
+            retention-days: 30
+
+        # ── Релиз (только при push тега v*) ──────────────────────────────────
+        - name: Create GitHub Release (on tag)
+          if: startsWith(github.ref, 'refs/tags/v')
+          uses: softprops/action-gh-release@v2
+          with:
+            files: Aniki-Windows.zip
+            generate_release_notes: false
+            body: |
+              ## Аники ${{ github.ref_name }}
+
+              **Установка:**
+              1. Установи [Ollama](https://ollama.com)
+              2. В cmd: `ollama run mistral`
+              3. Распакуй архив, запусти `Aniki.exe`
+
+              **Требования:** Windows 10/11 x64
+  
