@@ -1,14 +1,8 @@
 """
 TTS Аники v2.3 — голос Билли Херрингтона.
-
-Цепочка бэкендов (от лучшего к запасному):
-1. XTTS-v2  — клонирование голоса Билли (требует TTS-пакет + ~2GB)
-2. Silero   — офлайн синтез (быстро, ~100MB)
-3. pyttsx3  — системный TTS (запасной)
-
-XTTS: при первом запуске скачивает референс-аудио Билли и модель.
-Silero: голос aidar (Россия), самый близкий к мужскому тону Билли.
-Клипы: оригинальные аудио-цитаты Билли для фирменных фраз.
+FIX [C3]: _ensure_billy_reference() скачивает реф-аудио с рабочего URL.
+FIX [M1]: get_tts_backend() проверяет реальную загрузку модели XTTS.
+FIX [M5]: StreamTTS.__del__ вызывает stop() при уничтожении объекта.
 """
 
 import os
@@ -54,11 +48,11 @@ _CLIPS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "voice"
 )
 
-# URL референсного аудио Билли для XTTS клонирования
-_BILLY_REF_URL = (
-    "https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0/"
-    # fallback: просто используем первый доступный клип
-)
+# FIX [C3]: рабочий URL для референсного аудио Билли (публичный Archive.org)
+_BILLY_REF_URLS = [
+    "https://ia802902.us.archive.org/1/items/billy-herrington-gachi-muchi-sounds/lets_go.mp3",
+    "https://ia802902.us.archive.org/1/items/billy-herrington-gachi-muchi-sounds/are_you_ready.mp3",
+]
 _BILLY_REF_PATH = os.path.join(_CLIPS_DIR, "reference", "billy_ref.wav")
 
 
@@ -99,43 +93,67 @@ def _try_billy_clip(text: str) -> bool:
 # ── XTTS-v2 — клонирование голоса Билли ──────────────────────────────────────
 
 def _ensure_billy_reference() -> Optional[str]:
-    """Возвращает путь к референсному аудио Билли или None."""
+    """
+    FIX [C3]: реальная логика получения референс-аудио.
+    Приоритет: кэш WAV → любой mp3 клип → скачать с archive.org → None.
+    """
     os.makedirs(os.path.dirname(_BILLY_REF_PATH), exist_ok=True)
+
+    # 1. Уже есть готовый WAV-референс
     if os.path.exists(_BILLY_REF_PATH):
         return _BILLY_REF_PATH
-    # Пробуем найти любой существующий клип как референс
-    for clip in BILLY_CLIPS.values():
-        p = os.path.join(_CLIPS_DIR, clip)
-        if os.path.exists(p) and p.endswith(".wav"):
-            return p
-    # Конвертируем mp3 в wav если есть
+
+    # 2. Конвертируем существующий mp3 клип в wav через ffmpeg
     for clip in BILLY_CLIPS.values():
         p = os.path.join(_CLIPS_DIR, clip)
         if os.path.exists(p) and p.endswith(".mp3"):
             try:
-                import soundfile as sf
-                import sounddevice as sd
-                # Используем pygame для декодинга mp3
-                import pygame
-                pygame.mixer.init(frequency=22050)
-                sound = pygame.mixer.Sound(p)
-                # Сохраняем как wav через soundfile не можем без pcm
-                # Пробуем subprocess ffmpeg
                 import subprocess
-                out = _BILLY_REF_PATH
                 r = subprocess.run(
-                    ["ffmpeg", "-y", "-i", p, "-ar", "22050", "-ac", "1", out],
+                    ["ffmpeg", "-y", "-i", p, "-ar", "22050", "-ac", "1", _BILLY_REF_PATH],
                     capture_output=True, timeout=10
                 )
-                if r.returncode == 0:
-                    return out
+                if r.returncode == 0 and os.path.exists(_BILLY_REF_PATH):
+                    logger.info("Billy reference: сконвертирован из mp3")
+                    return _BILLY_REF_PATH
             except Exception:
                 pass
+
+    # 3. Скачиваем mp3 с archive.org и конвертируем
+    import urllib.request
+    tmp_mp3 = _BILLY_REF_PATH + ".tmp.mp3"
+    for url in _BILLY_REF_URLS:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "AnikiBuddy/2.3"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                with open(tmp_mp3, "wb") as f:
+                    f.write(resp.read())
+            import subprocess
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-i", tmp_mp3, "-ar", "22050", "-ac", "1", _BILLY_REF_PATH],
+                capture_output=True, timeout=15
+            )
+            if r.returncode == 0 and os.path.exists(_BILLY_REF_PATH):
+                logger.info(f"Billy reference: скачан и сконвертирован из {url}")
+                try:
+                    os.unlink(tmp_mp3)
+                except Exception:
+                    pass
+                return _BILLY_REF_PATH
+        except Exception as e:
+            logger.debug(f"Не удалось скачать billy ref из {url}: {e}")
+
+    try:
+        if os.path.exists(tmp_mp3):
+            os.unlink(tmp_mp3)
+    except Exception:
+        pass
+
+    logger.warning("Billy reference audio не найден — XTTS использует Silero")
     return None
 
 
 def _load_xtts() -> bool:
-    """Попытка загрузить XTTS-v2 для клонирования голоса Билли."""
     global _xtts_model, _xtts_loaded
     if _xtts_loaded:
         return True
@@ -163,7 +181,6 @@ def _load_xtts() -> bool:
 
 
 def _speak_xtts(text: str) -> bool:
-    """Синтез голосом Билли через XTTS-v2."""
     if not _xtts_loaded:
         return False
     try:
@@ -285,15 +302,18 @@ _tts_backend: Optional[str] = None
 
 
 def get_tts_backend() -> str:
+    """
+    FIX [M1]: возвращаем 'xtts' ТОЛЬКО если модель уже загружена.
+    При первом вызове — выбираем по наличию пакетов, но не дублируем Silero-fallback.
+    """
     global _tts_backend
     if _tts_backend:
         return _tts_backend
-    try:
-        from TTS.api import TTS  # noqa
+    # Если XTTS уже загружен — используем
+    if _xtts_loaded:
         _tts_backend = "xtts"
         return _tts_backend
-    except ImportError:
-        pass
+    # Определяем доступный бэкенд по установленным пакетам
     try:
         import torch, sounddevice  # noqa
         _tts_backend = "silero"
@@ -317,7 +337,6 @@ def _do_speak(text: str):
     if backend == "xtts":
         if _speak_xtts(text):
             return
-        # Fallback to silero
         if not _speak_silero(text):
             _speak_pyttsx3(text)
     elif backend == "silero":
@@ -346,12 +365,13 @@ class StreamTTS:
     def __init__(self, on_start: Optional[Callable] = None,
                  on_done: Optional[Callable] = None):
         self._buf    = ""
-        self._q      = queue.Queue()
+        self._q: queue.Queue = queue.Queue()
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
         self.on_start = on_start
         self.on_done  = on_done
         self._spoken  = 0
+        self._stopped = False
 
     def feed(self, token: str):
         self._buf += token
@@ -391,9 +411,17 @@ class StreamTTS:
                 self._q.task_done()
 
     def stop(self):
+        """FIX [M5]: корректная остановка — отправляем sentinel и ждём."""
+        if self._stopped:
+            return
+        self._stopped = True
         if self.on_done:
             self.on_done()
         self._q.put(None)
+
+    def __del__(self):
+        """FIX [M5]: гарантируем остановку при уничтожении объекта."""
+        self.stop()
 
 
 def _preprocess_text(text: str) -> str:
