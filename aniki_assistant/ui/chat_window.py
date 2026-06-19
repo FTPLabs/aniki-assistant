@@ -1,642 +1,557 @@
 """
-Окно чата Аники v2.2 — стриминг TTS, исправленные напоминания.
-FIX: reminder_system.add_reminder() вместо .add().
-FIX: StreamTTS — Аники начинает говорить сразу с первого предложения.
-"""
-
-import logging
-import threading
-from datetime import datetime
-from typing import Optional
-
-logger = logging.getLogger(__name__)
-
-try:
-    from PyQt6.QtWidgets import (
-        QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
-        QLineEdit, QPushButton, QLabel, QScrollArea,
-        QFrame, QSizePolicy, QSpacerItem, QApplication,
-        QListWidget, QDialog, QDialogButtonBox,
-        QTabWidget, QFormLayout, QSpinBox, QDateTimeEdit,
-        QCheckBox, QMessageBox,
-    )
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QDateTime, QObject
-    from PyQt6.QtGui import QFont, QColor, QPixmap
-    PYQT_AVAILABLE = True
-except ImportError:
-    PYQT_AVAILABLE = False
-
-
-if PYQT_AVAILABLE:
-
-    class AIWorker(QThread):
-        response_chunk  = pyqtSignal(str)
-        response_done   = pyqtSignal(str)
-        thinking_start  = pyqtSignal()
-        error           = pyqtSignal(str)
-        prompt_ready    = pyqtSignal(str)
-        speak_sentence  = pyqtSignal(str)   # NEW: стриминговый TTS
-
-        def __init__(self, ai_engine, message: str, tts_enabled: bool = True):
-            super().__init__()
-            self.ai_engine   = ai_engine
-            self.message     = message
-            self.tts_enabled = tts_enabled
-
-        def run(self):
-            try:
-                self.thinking_start.emit()
-                full      = ""
-                is_prompt = False
-                tts_buf   = ""
-
-                from core.commands import PROMPT_MARKER, is_prompt_result, extract_prompt
-                import re
-                SENT_END = re.compile(r'([.!?…]+[\s\n]|[.!?…]+$)')
-
-                for chunk in self.ai_engine.chat_stream(self.message):
-                    if chunk == PROMPT_MARKER:
-                        is_prompt = True
-                        continue
-                    full    += chunk
-                    tts_buf += chunk
-                    self.response_chunk.emit(chunk)
-
-                    # Стриминговый TTS: отправляем предложения сразу
-                    if self.tts_enabled and not is_prompt:
-                        while True:
-                            m = SENT_END.search(tts_buf)
-                            if not m:
-                                break
-                            end      = m.end()
-                            sentence = tts_buf[:end].strip()
-                            tts_buf  = tts_buf[end:]
-                            if sentence and len(sentence) > 5:
-                                self.speak_sentence.emit(sentence)
-
-                # Остаток буфера TTS
-                if self.tts_enabled and not is_prompt and tts_buf.strip():
-                    self.speak_sentence.emit(tts_buf.strip())
-
-                if is_prompt or is_prompt_result(full):
-                    prompt_text = extract_prompt(full) if is_prompt_result(full) else full
-                    self.prompt_ready.emit(prompt_text.strip())
-                else:
-                    self.response_done.emit(full)
-
-            except Exception as e:
-                self.error.emit(str(e))
-
-
-    class VADThread(QThread):
-        text_recognized   = pyqtSignal(str)
-        listening_changed = pyqtSignal(bool)
-
-        def __init__(self, parent=None):
-            super().__init__(parent)
-            self._listener  = None
-            self._stop_flag = False
-
-        def run(self):
-            try:
-                from core.speech import VoiceListener, is_available
-                if not is_available():
-                    logger.warning("STT недоступен — VAD отключён")
-                    return
-                self._listener = VoiceListener(
-                    callback=lambda t: self.text_recognized.emit(t),
-                    wake_word=None,
-                    on_listening_change=lambda v: self.listening_changed.emit(v),
-                )
-                self._listener.start()
-                while not self._stop_flag:
-                    self.msleep(200)
-                self._listener.stop()
-            except Exception as e:
-                logger.error(f"VAD поток: {e}")
-
-        def stop_listening(self):
-            self._stop_flag = True
-            if self._listener:
-                self._listener.stop()
-
-
-    class MessageBubble(QFrame):
-        def __init__(self, text: str, is_user: bool = False, parent=None):
-            super().__init__(parent)
-            self.is_user = is_user
-            self._lbl: Optional[QLabel] = None
-            self._setup_ui(text)
-
-        def _setup_ui(self, text: str):
-            outer = QHBoxLayout(self)
-            outer.setContentsMargins(8, 4, 8, 4)
-            bubble = QFrame()
-            bubble.setMaximumWidth(560)
-            bl = QVBoxLayout(bubble)
-            bl.setContentsMargins(13, 9, 13, 9)
-            bl.setSpacing(3)
-            sender = QLabel("Ты" if self.is_user else "Аники")
-            sf = QFont("Segoe UI", 8); sf.setBold(True)
-            sender.setFont(sf)
-            self._lbl = QLabel(text)
-            self._lbl.setWordWrap(True)
-            self._lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            self._lbl.setFont(QFont("Segoe UI", 11))
-            time_lbl = QLabel(datetime.now().strftime("%H:%M"))
-            time_lbl.setFont(QFont("Segoe UI", 7))
-            bl.addWidget(sender)
-            bl.addWidget(self._lbl)
-            bl.addWidget(time_lbl)
-            if self.is_user:
-                sender.setStyleSheet("color:#a0c4ff;")
-                time_lbl.setStyleSheet("color:#a0c4ff;")
-                bubble.setStyleSheet("QFrame{background:#1a4a8a;border-radius:14px;border-bottom-right-radius:3px;}")
-                outer.addSpacerItem(QSpacerItem(40,0,QSizePolicy.Policy.Expanding))
-                outer.addWidget(bubble)
-            else:
-                sender.setStyleSheet("color:#ff9e44;")
-                time_lbl.setStyleSheet("color:#666;")
-                bubble.setStyleSheet("QFrame{background:#1e1e32;border-radius:14px;border-bottom-left-radius:3px;}")
-                outer.addWidget(bubble)
-                outer.addSpacerItem(QSpacerItem(40,0,QSizePolicy.Policy.Expanding))
-
-        def update_text(self, text: str):
-            if self._lbl:
-                self._lbl.setText(text)
-
-
-    class PromptDialog(QDialog):
-        def __init__(self, prompt_text: str, parent=None):
-            super().__init__(parent)
-            self.setWindowTitle("Аники написал промпт")
-            self.setMinimumSize(640, 420)
-            self.setStyleSheet("QDialog{background:#0d0d1e;color:white;}")
-            layout = QVBoxLayout(self)
-            lbl = QLabel("Готовый промпт — скопируй и используй:")
-            lbl.setStyleSheet("color:#ff9e44;font-size:13px;font-weight:bold;")
-            layout.addWidget(lbl)
-            self._editor = QTextEdit()
-            self._editor.setPlainText(prompt_text)
-            self._editor.setStyleSheet(
-                "QTextEdit{background:#12122a;color:white;border:1px solid #3a3a5e;"
-                "border-radius:8px;padding:10px;font-size:13px;font-family:'Segoe UI';}"
-            )
-            layout.addWidget(self._editor)
-            btn_row = QHBoxLayout()
-            copy_btn = QPushButton("📋 Скопировать")
-            copy_btn.setStyleSheet(
-                "QPushButton{background:#ff9e44;color:#1a1a2e;border-radius:7px;"
-                "padding:9px 20px;font-weight:bold;}QPushButton:hover{background:#ffb344;}"
-            )
-            copy_btn.clicked.connect(lambda: (
-                QApplication.clipboard().setText(self._editor.toPlainText()),
-                QMessageBox.information(self, "Скопировано!", "Промпт в буфере!")
-            ))
-            close_btn = QPushButton("Закрыть")
-            close_btn.setStyleSheet(
-                "QPushButton{background:#1e1e32;color:white;border-radius:7px;"
-                "padding:9px 16px;border:1px solid #3a3a5e;}QPushButton:hover{background:#2a2a4e;}"
-            )
-            close_btn.clicked.connect(self.accept)
-            btn_row.addWidget(copy_btn)
-            btn_row.addWidget(close_btn)
-            btn_row.addStretch()
-            layout.addLayout(btn_row)
-
-
-    class ReminderDialog(QDialog):
-        def __init__(self, parent=None):
-            super().__init__(parent)
-            self.setWindowTitle("Новое напоминание")
-            self.setMinimumWidth(400)
-            self.setStyleSheet("QDialog{background:#0d0d1e;color:white;}")
-            layout = QVBoxLayout(self)
-            form = QFormLayout()
-            form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-            self.title_input = QLineEdit()
-            self.title_input.setPlaceholderText("Название")
-            self.title_input.setStyleSheet(_inp())
-            form.addRow("Название:", self.title_input)
-            self.desc_input = QTextEdit()
-            self.desc_input.setPlaceholderText("Описание (необязательно)")
-            self.desc_input.setMaximumHeight(70)
-            self.desc_input.setStyleSheet(_inp())
-            form.addRow("Описание:", self.desc_input)
-            self.repeat_check = QCheckBox("Повторять каждые")
-            self.repeat_check.setStyleSheet("color:white;")
-            self.repeat_spin = QSpinBox()
-            self.repeat_spin.setRange(1, 1440)
-            self.repeat_spin.setValue(60)
-            self.repeat_spin.setSuffix(" мин")
-            self.repeat_spin.setStyleSheet("color:white;background:#1e1e32;padding:5px;")
-            rr = QHBoxLayout()
-            rr.addWidget(self.repeat_check)
-            rr.addWidget(self.repeat_spin)
-            form.addRow("Повтор:", rr)
-            self.dt_check = QCheckBox("В конкретное время")
-            self.dt_check.setStyleSheet("color:white;")
-            self.dt_edit = QDateTimeEdit(QDateTime.currentDateTime())
-            self.dt_edit.setEnabled(False)
-            self.dt_check.toggled.connect(self.dt_edit.setEnabled)
-            form.addRow("Время:", self.dt_check)
-            form.addRow("", self.dt_edit)
-            layout.addLayout(form)
-            btns = QDialogButtonBox(
-                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-            )
-            btns.accepted.connect(self.accept)
-            btns.rejected.connect(self.reject)
-            layout.addWidget(btns)
-
-        def get_data(self) -> dict:
-            return {
-                "title":          self.title_input.text(),
-                "description":    self.desc_input.toPlainText(),
-                "remind_at":      self.dt_edit.dateTime().toPyDateTime() if self.dt_check.isChecked() else None,
-                "repeat_minutes": self.repeat_spin.value() if self.repeat_check.isChecked() else 0,
-            }
-
-
-    def _inp() -> str:
-        return ("background:#1e1e32;color:white;border:1px solid #3a3a5e;"
-                "border-radius:6px;padding:6px;font-size:12px;")
-
-
-    class ChatWindow(QWidget):
-        message_sent     = pyqtSignal(str)
-        avatar_thinking  = pyqtSignal(bool)
-        avatar_speaking  = pyqtSignal(bool)
-        avatar_listening = pyqtSignal(bool)
-
-        def __init__(self, ai_engine=None, reminder_system=None,
-                     tts_enabled: bool = True, stt_enabled: bool = True):
-            super().__init__()
-            self.ai_engine        = ai_engine
-            self.reminder_system  = reminder_system
-            self.tts_enabled      = tts_enabled
-            self.stt_enabled      = stt_enabled
-            self._current_bubble: Optional[MessageBubble] = None
-            self._current_text    = ""
-            self._worker: Optional[AIWorker] = None
-            self._vad_thread: Optional[VADThread] = None
-            self._tts_speaking    = False
-            self._setup_ui()
-            self._apply_dark_theme()
-            if self.stt_enabled:
-                QTimer.singleShot(2000, self._start_vad)
-
-        def _setup_ui(self):
-            self.setWindowTitle("Аники — ИИ-ассистент")
-            self.setMinimumSize(700, 740)
-            self.resize(780, 840)
-            ml = QVBoxLayout(self)
-            ml.setContentsMargins(0, 0, 0, 0)
-            ml.setSpacing(0)
-            ml.addWidget(self._build_header())
-            self.tabs = self._build_tabs()
-            ml.addWidget(self.tabs)
-            self._add_welcome_message()
-
-        def _build_header(self) -> QFrame:
-            h = QFrame()
-            h.setFixedHeight(60)
-            h.setStyleSheet("background:#12122a;border-bottom:1px solid #2a2a4e;")
-            lay = QHBoxLayout(h)
-            title = QLabel("  АНИКИ")
-            f = QFont("Segoe UI", 17); f.setBold(True)
-            title.setFont(f)
-            title.setStyleSheet("color:#ff9e44;letter-spacing:2px;")
-            self.status_label = QLabel("● Онлайн")
-            self.status_label.setStyleSheet("color:#44ff88;font-size:11px;")
-            self.vad_label = QLabel()
-            self.vad_label.setStyleSheet("color:#44aaff;font-size:11px;")
-            lay.addWidget(title)
-            lay.addStretch()
-            lay.addWidget(self.vad_label)
-            lay.addSpacing(12)
-            lay.addWidget(self.status_label)
-            return h
-
-        def _build_tabs(self) -> QTabWidget:
-            tabs = QTabWidget()
-            tabs.setStyleSheet("""
-                QTabWidget::pane{border:none;}
-                QTabBar::tab{background:#12122a;color:#666;padding:9px 18px;border:none;font-family:'Segoe UI';font-size:12px;}
-                QTabBar::tab:selected{background:#0d0d1e;color:#ff9e44;border-bottom:2px solid #ff9e44;}
-                QTabBar::tab:hover{color:#ccc;}
-            """)
-            tabs.addTab(self._create_chat_tab(),      "  Чат  ")
-            tabs.addTab(self._create_reminders_tab(), "  Напоминания  ")
-            tabs.addTab(self._create_settings_tab(),  "  Настройки  ")
-            return tabs
-
-        def _create_chat_tab(self) -> QWidget:
-            w = QWidget()
-            lay = QVBoxLayout(w)
-            lay.setContentsMargins(0, 0, 0, 0)
-            lay.setSpacing(0)
-            self.scroll_area = QScrollArea()
-            self.scroll_area.setWidgetResizable(True)
-            self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            self.scroll_area.setStyleSheet("border:none;background:#0d0d1e;")
-            self.messages_widget = QWidget()
-            self.messages_widget.setStyleSheet("background:#0d0d1e;")
-            self.messages_layout = QVBoxLayout(self.messages_widget)
-            self.messages_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-            self.messages_layout.setSpacing(6)
-            self.messages_layout.setContentsMargins(10, 10, 10, 10)
-            self.scroll_area.setWidget(self.messages_widget)
-            inp_frame = QFrame()
-            inp_frame.setStyleSheet("QFrame{background:#12122a;border-top:1px solid #2a2a4e;}")
-            inp_frame.setFixedHeight(76)
-            inp_lay = QHBoxLayout(inp_frame)
-            inp_lay.setContentsMargins(14, 12, 14, 12)
-            self.input_field = QLineEdit()
-            self.input_field.setPlaceholderText("Напиши Аники или говори в микрофон...")
-            self.input_field.setStyleSheet(
-                "QLineEdit{background:#1e1e32;border:1px solid #3a3a5e;border-radius:22px;"
-                "padding:10px 18px;color:white;font-size:13px;font-family:'Segoe UI';}"
-                "QLineEdit:focus{border:1px solid #ff9e44;}"
-            )
-            self.input_field.returnPressed.connect(self._send_message)
-            self.send_btn = QPushButton("▶")
-            self.send_btn.setFixedSize(46, 46)
-            self.send_btn.setStyleSheet(
-                "QPushButton{background:#ff9e44;border-radius:23px;color:#1a1a2e;font-size:17px;font-weight:bold;}"
-                "QPushButton:hover{background:#ffb344;}QPushButton:pressed{background:#e08e34;}"
-                "QPushButton:disabled{background:#333;color:#666;}"
-            )
-            self.send_btn.clicked.connect(self._send_message)
-            self.mic_btn = QPushButton("🎤")
-            self.mic_btn.setFixedSize(46, 46)
-            self.mic_btn.setCheckable(True)
-            self.mic_btn.setStyleSheet(
-                "QPushButton{background:#1e1e32;border-radius:23px;font-size:17px;border:1px solid #3a3a5e;}"
-                "QPushButton:checked{background:#aa2233;border:1px solid #cc2244;}"
-                "QPushButton:hover{background:#2a2a4e;}"
-            )
-            self.mic_btn.toggled.connect(self._toggle_vad)
-            inp_lay.addWidget(self.input_field)
-            inp_lay.addWidget(self.mic_btn)
-            inp_lay.addWidget(self.send_btn)
-            lay.addWidget(self.scroll_area)
-            lay.addWidget(inp_frame)
-            return w
-
-        def _create_reminders_tab(self) -> QWidget:
-            w = QWidget()
-            lay = QVBoxLayout(w)
-            lay.setContentsMargins(14, 14, 14, 14)
-            btn_lay = QHBoxLayout()
-            add_btn = QPushButton("+ Напоминание")
-            add_btn.setStyleSheet(self._btn_primary())
-            add_btn.clicked.connect(self._add_reminder_dialog)
-            ref_btn = QPushButton("Обновить")
-            ref_btn.setStyleSheet(self._btn_secondary())
-            ref_btn.clicked.connect(self._refresh_reminders)
-            btn_lay.addWidget(add_btn)
-            btn_lay.addWidget(ref_btn)
-            btn_lay.addStretch()
-            self.reminders_list = QListWidget()
-            self.reminders_list.setStyleSheet(
-                "QListWidget{background:#12122a;border:1px solid #2a2a4e;border-radius:8px;"
-                "color:white;font-size:12px;}"
-                "QListWidget::item{padding:10px;border-bottom:1px solid #2a2a4e;}"
-                "QListWidget::item:selected{background:#2a2a4e;}"
-            )
-            lay.addLayout(btn_lay)
-            lay.addWidget(self.reminders_list)
-            self._refresh_reminders()
-            return w
-
-        def _create_settings_tab(self) -> QWidget:
-            w = QWidget()
-            lay = QVBoxLayout(w)
-            lay.setContentsMargins(20, 20, 20, 20)
-            form = QFormLayout()
-            form.setSpacing(14)
-            self.tts_check = QCheckBox("Голосовые ответы (TTS)")
-            self.tts_check.setChecked(self.tts_enabled)
-            self.tts_check.setStyleSheet("color:white;font-size:13px;")
-            form.addRow(self.tts_check)
-            self.stt_check = QCheckBox("Голосовое управление (VAD)")
-            self.stt_check.setChecked(self.stt_enabled)
-            self.stt_check.setStyleSheet("color:white;font-size:13px;")
-            # FIX M1: синхронизируем кнопку mic при изменении чекбокса VAD
-            self.stt_check.toggled.connect(self._toggle_vad_from_settings)
-            form.addRow(self.stt_check)
-            self.avatar_check = QCheckBox("Показывать аватар Билли на экране")
-            self.avatar_check.setChecked(True)
-            self.avatar_check.setStyleSheet("color:white;font-size:13px;")
-            form.addRow(self.avatar_check)
-            save_btn = QPushButton("Сохранить")
-            save_btn.setStyleSheet(self._btn_primary())
-            save_btn.clicked.connect(self._save_settings)
-            lay.addLayout(form)
-            lay.addWidget(save_btn)
-            lay.addStretch()
-            return w
-
-        def _btn_primary(self) -> str:
-            return ("QPushButton{background:#ff9e44;color:#1a1a2e;border-radius:7px;"
-                    "padding:9px 20px;font-weight:bold;font-size:13px;}"
-                    "QPushButton:hover{background:#ffb344;}"
-                    "QPushButton:pressed{background:#e08e34;}")
-
-        def _btn_secondary(self) -> str:
-            return ("QPushButton{background:#1e1e32;color:white;border-radius:7px;"
-                    "padding:9px 16px;border:1px solid #3a3a5e;font-size:12px;}"
-                    "QPushButton:hover{background:#2a2a4e;}")
-
-        def _apply_dark_theme(self):
-            self.setStyleSheet("""
-                QWidget{background:#0d0d1e;color:white;font-family:'Segoe UI';}
-                QTabWidget{background:#0d0d1e;}
-                QScrollBar:vertical{background:#12122a;width:7px;border-radius:3px;}
-                QScrollBar::handle:vertical{background:#3a3a5e;border-radius:3px;}
-                QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}
-                QLabel{color:white;}
-            """)
-
-        def _add_welcome_message(self):
-            from core.personality import get_phrase
-            self.add_bot_message(get_phrase("greeting"))
-
-        def add_user_message(self, text: str):
-            b = MessageBubble(text, is_user=True)
-            self.messages_layout.addWidget(b)
-            self._scroll_to_bottom()
-
-        def add_bot_message(self, text: str):
-            b = MessageBubble(text, is_user=False)
-            self.messages_layout.addWidget(b)
-            self._scroll_to_bottom()
-
-        def start_streaming_bot_message(self):
-            self._current_text   = ""
-            self._current_bubble = MessageBubble("...", is_user=False)
-            self.messages_layout.addWidget(self._current_bubble)
-            self._scroll_to_bottom()
-
-        def append_stream_token(self, token: str):
-            from core.commands import PROMPT_MARKER
-            if token == PROMPT_MARKER:
-                return
-            self._current_text += token
-            if self._current_bubble:
-                self._current_bubble.update_text(self._current_text)
-            self._scroll_to_bottom()
-
-        def show_reminder_notification(self, title: str, msg: str):
-            self.add_bot_message(f"⏰ {title}\n{msg}")
-
-        def _send_message(self):
-            text = self.input_field.text().strip()
-            if not text:
-                return
-            self.input_field.clear()
-            self.input_field.setEnabled(False)
-            self.send_btn.setEnabled(False)
-            self.add_user_message(text)
-            self.message_sent.emit(text)
-            self._dispatch_to_ai(text)
-
-        def _dispatch_to_ai(self, text: str):
-            if self.ai_engine:
-                self.start_streaming_bot_message()
-                self._worker = AIWorker(self.ai_engine, text, tts_enabled=self.tts_enabled)
-                self._worker.thinking_start.connect(lambda: self.avatar_thinking.emit(True))
-                self._worker.response_chunk.connect(self.append_stream_token)
-                self._worker.response_done.connect(self._on_done)
-                self._worker.error.connect(self._on_error)
-                self._worker.prompt_ready.connect(self._show_prompt_dialog)
-                # FIX: стриминговый TTS — говорит сразу
-                self._worker.speak_sentence.connect(self._speak_sentence_async)
-                self._worker.start()
-            else:
-                self.add_bot_message(
-                    "Бро, ИИ не инициализирован. Проверь Ollama!\n"
-                    "Установи: https://ollama.com и запусти: ollama run mistral"
-                )
-                self._reset_input()
-
-        def _speak_sentence_async(self, sentence: str):
-            """Воспроизводит предложение в фоне (стриминг TTS)."""
-            self.avatar_speaking.emit(True)
-            # FIX H2: используем публичный API speak() вместо приватных _do_speak/_preprocess_text
-            from core.tts import speak
-            def _do():
-                speak(sentence)
-            threading.Thread(target=_do, daemon=True).start()
-
-        def _on_done(self, full_text: str):
-            self.avatar_thinking.emit(False)
-            QTimer.singleShot(500, lambda: self.avatar_speaking.emit(False))
-            self._reset_input()
-
-        def _on_error(self, err: str):
-            self.avatar_thinking.emit(False)
-            self.avatar_speaking.emit(False)
-            self.add_bot_message(f"Ошибка: {err}")
-            self._reset_input()
-
-        def _show_prompt_dialog(self, prompt_text: str):
-            self.avatar_thinking.emit(False)
-            self._reset_input()
-            if self._current_bubble:
-                self._current_bubble.update_text("Готово! Промпт написан.")
-            PromptDialog(prompt_text, self).exec()
-
-        def _reset_input(self):
-            self.input_field.setEnabled(True)
-            self.send_btn.setEnabled(True)
-            self.input_field.setFocus()
-
-        def _scroll_to_bottom(self):
-            QTimer.singleShot(60, lambda: (
-                self.scroll_area.verticalScrollBar().setValue(
-                    self.scroll_area.verticalScrollBar().maximum()
-                )
-            ))
-
-        def _start_vad(self):
-            if self._vad_thread and self._vad_thread.isRunning():
-                return
-            self._vad_thread = VADThread(self)
-            self._vad_thread.text_recognized.connect(self._on_voice_text)
-            self._vad_thread.listening_changed.connect(self._on_vad_listening)
-            self._vad_thread.start()
-            self.mic_btn.setChecked(True)
-
-        def _stop_vad(self):
-            if self._vad_thread:
-                self._vad_thread.stop_listening()
-                self._vad_thread = None
-            self.mic_btn.setChecked(False)
-            self.vad_label.setText("")
-            self.avatar_listening.emit(False)
-
-        def _toggle_vad(self, enabled: bool):
-            if enabled:
-                self._start_vad()
-            else:
-                self._stop_vad()
-
-        def _toggle_vad_from_settings(self, enabled: bool):
-            # FIX M1: синхронизируем визуальное состояние кнопки mic с чекбоксом
-            self.mic_btn.blockSignals(True)
-            self.mic_btn.setChecked(enabled)
-            self.mic_btn.blockSignals(False)
-            self._toggle_vad(enabled)
-
-        def _on_voice_text(self, text: str):
-            if not text:
-                return
-            # FIX H1: не запускаем новый AIWorker если предыдущий ещё работает
-            if self._worker and self._worker.isRunning():
-                logger.debug("VAD: игнорируем ввод — ИИ ещё отвечает")
-                return
-            self.input_field.setText(text)
-            self.add_user_message(text)
-            self.message_sent.emit(text)
-            self.input_field.clear()
-            self.input_field.setEnabled(False)
-            self.send_btn.setEnabled(False)
-            self._dispatch_to_ai(text)
-
-        def _on_vad_listening(self, is_active: bool):
-            self.avatar_listening.emit(is_active)
-            self.vad_label.setText("🎙 Записываю..." if is_active else "")
-
-        def _add_reminder_dialog(self):
-            dlg = ReminderDialog(self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                data = dlg.get_data()
-                if data["title"] and self.reminder_system:
-                    # FIX: было .add(), теперь .add_reminder()
-                    self.reminder_system.add_reminder(
-                        title=data["title"],
-                        description=data["description"],
-                        remind_at=data["remind_at"],
-                        repeat_minutes=data["repeat_minutes"],
-                    )
-                    self._refresh_reminders()
-
-        def _refresh_reminders(self):
-            from core.memory import get_active_reminders
-            self.reminders_list.clear()
-            for r in get_active_reminders():
-                self.reminders_list.addItem(
-                    f"⏰ {r['title']} — каждые {r['repeat_minutes']} мин"
-                    if r["repeat_minutes"] else f"⏰ {r['title']}"
-                )
-
-        def _save_settings(self):
-            self.tts_enabled = self.tts_check.isChecked()
-            self.stt_enabled = self.stt_check.isChecked()
-            if self.stt_enabled:
-                self._start_vad()
-            else:
-                self._stop_vad()
-            self.add_bot_message("Настройки сохранены! Are you ready?")
+  ChatWindow Аники v3.1 — полностью переработанный интерфейс.
+  Живые анимации, градиенты, современный дизайн.
+  """
+
+  import logging
+  from typing import Optional
+  from datetime import datetime
+
+  from PyQt6.QtWidgets import (
+      QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
+      QLabel, QScrollArea, QFrame, QTabWidget, QSizePolicy,
+      QGraphicsOpacityEffect, QApplication, QScrollBar,
+      QListWidget, QListWidgetItem, QDialog, QLineEdit,
+      QSpinBox, QFormLayout, QDialogButtonBox, QMessageBox,
+  )
+  from PyQt6.QtCore import (
+      Qt, QTimer, QPropertyAnimation, QEasingCurve,
+      pyqtSignal, QSize, QThread, QObject, QEvent,
+  )
+  from PyQt6.QtGui import (
+      QFont, QColor, QKeyEvent, QIcon, QPixmap, QPainter,
+      QLinearGradient, QPainterPath, QBrush, QPen,
+  )
+
+  logger = logging.getLogger(__name__)
+
+  # ── Стили ────────────────────────────────────────────────────────────────────
+  STYLE_MAIN = """
+  QWidget {
+      background: #0d0d1e;
+      color: #e8e8f0;
+      font-family: 'Segoe UI', Arial, sans-serif;
+  }
+  QScrollBar:vertical {
+      background: #1a1a2e;
+      width: 6px;
+      border-radius: 3px;
+  }
+  QScrollBar::handle:vertical {
+      background: #ff9e44;
+      border-radius: 3px;
+      min-height: 20px;
+  }
+  QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+  QScrollArea { border: none; background: transparent; }
+  QTabWidget::pane { border: 1px solid #2a2a4a; border-radius: 8px; }
+  QTabBar::tab {
+      background: #1a1a2e;
+      color: #888;
+      padding: 8px 20px;
+      border-radius: 6px 6px 0 0;
+      font-size: 13px;
+  }
+  QTabBar::tab:selected { background: #252545; color: #ff9e44; }
+  QTabBar::tab:hover { color: #e8e8f0; }
+  """
+
+  STYLE_INPUT = """
+  QTextEdit {
+      background: #1a1a2e;
+      color: #e8e8f0;
+      border: 1px solid #2a2a4a;
+      border-radius: 16px;
+      padding: 10px 16px;
+      font-size: 14px;
+      font-family: 'Segoe UI', Arial;
+      selection-background-color: #ff9e44;
+  }
+  QTextEdit:focus {
+      border: 1px solid #ff9e44;
+  }
+  """
+
+  STYLE_BTN_SEND = """
+  QPushButton {
+      background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+          stop:0 #ff9e44, stop:1 #ff6b1a);
+      color: #0d0d1e;
+      border: none;
+      border-radius: 22px;
+      font-size: 18px;
+      font-weight: bold;
+      min-width: 44px;
+      min-height: 44px;
+  }
+  QPushButton:hover {
+      background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+          stop:0 #ffb866, stop:1 #ff8833);
+  }
+  QPushButton:pressed { background: #cc7a33; }
+  """
+
+  STYLE_BTN_MIC = """
+  QPushButton {
+      background: #1e1e3a;
+      color: #ff9e44;
+      border: 1.5px solid #ff9e44;
+      border-radius: 22px;
+      font-size: 16px;
+      min-width: 44px;
+      min-height: 44px;
+  }
+  QPushButton:hover { background: #2a2a4e; }
+  QPushButton:checked {
+      background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+          stop:0 #c060ff, stop:1 #8020cc);
+      border-color: #c060ff;
+      color: white;
+  }
+  """
+
+
+  # ── Пузырь сообщения ──────────────────────────────────────────────────────────
+  class MessageBubble(QFrame):
+      def __init__(self, text: str, is_bot: bool, parent=None):
+          super().__init__(parent)
+          self.is_bot = is_bot
+          self._opacity = QGraphicsOpacityEffect(self)
+          self._opacity.setOpacity(0)
+          self.setGraphicsEffect(self._opacity)
+          self._anim = QPropertyAnimation(self._opacity, b"opacity")
+          self._anim.setDuration(350)
+          self._anim.setStartValue(0.0)
+          self._anim.setEndValue(1.0)
+          self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+          layout = QVBoxLayout(self)
+          layout.setContentsMargins(0, 4, 0, 4)
+
+          # Имя
+          name = "Аники" if is_bot else "Ты"
+          name_lbl = QLabel(name)
+          name_lbl.setStyleSheet(
+              f"color:{'#ff9e44' if is_bot else '#7eb8ff'};"
+              "font-size:11px;font-weight:bold;background:transparent;padding:0 4px;"
+          )
+
+          # Текст
+          msg_lbl = QLabel(text)
+          msg_lbl.setWordWrap(True)
+          msg_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+          msg_lbl.setStyleSheet(
+              f"""
+              background: {'#1e1e3a' if is_bot else '#1a2e1a'};
+              color: #e8e8f0;
+              border-radius: 14px;
+              padding: 10px 14px;
+              font-size: 14px;
+              border: 1px solid {'#2a2a5a' if is_bot else '#1a3a1a'};
+              """
+          )
+          msg_lbl.setMaximumWidth(420)
+
+          # Время
+          time_lbl = QLabel(datetime.now().strftime("%H:%M"))
+          time_lbl.setStyleSheet("color:#444;font-size:10px;background:transparent;padding:0 4px;")
+
+          if is_bot:
+              layout.addWidget(name_lbl, alignment=Qt.AlignmentFlag.AlignLeft)
+              layout.addWidget(msg_lbl, alignment=Qt.AlignmentFlag.AlignLeft)
+              layout.addWidget(time_lbl, alignment=Qt.AlignmentFlag.AlignLeft)
+          else:
+              layout.addWidget(name_lbl, alignment=Qt.AlignmentFlag.AlignRight)
+              layout.addWidget(msg_lbl, alignment=Qt.AlignmentFlag.AlignRight)
+              layout.addWidget(time_lbl, alignment=Qt.AlignmentFlag.AlignRight)
+
+          self._anim.start()
+
+      def append_text(self, chunk: str):
+          # Для стриминга — находим QLabel с сообщением и обновляем
+          for i in range(self.layout().count()):
+              w = self.layout().itemAt(i).widget()
+              if isinstance(w, QLabel) and "background: #1e1e3a" in (w.styleSheet() or ""):
+                  w.setText(w.text() + chunk)
+                  return
+
+
+  # ── Статусная строка ──────────────────────────────────────────────────────────
+  class StatusBar(QWidget):
+      def __init__(self, parent=None):
+          super().__init__(parent)
+          self.setFixedHeight(28)
+          layout = QHBoxLayout(self)
+          layout.setContentsMargins(12, 0, 12, 0)
+
+          self._dot = QLabel("●")
+          self._dot.setStyleSheet("color:#50e690;font-size:10px;")
+          self._text = QLabel("Онлайн")
+          self._text.setStyleSheet("color:#50e690;font-size:12px;")
+
+          layout.addStretch()
+          layout.addWidget(self._dot)
+          layout.addWidget(self._text)
+
+          self._blink_timer = QTimer(self)
+          self._blink_timer.timeout.connect(self._blink)
+          self._blink_on = True
+
+      def set_status(self, text: str, color: str = "#50e690", blink: bool = False):
+          self._text.setText(text)
+          self._dot.setStyleSheet(f"color:{color};font-size:10px;")
+          self._text.setStyleSheet(f"color:{color};font-size:12px;")
+          if blink:
+              self._blink_timer.start(600)
+          else:
+              self._blink_timer.stop()
+              self._dot.setVisible(True)
+
+      def _blink(self):
+          self._blink_on = not self._blink_on
+          self._dot.setVisible(self._blink_on)
+
+
+  # ── Рабочий поток для ИИ ─────────────────────────────────────────────────────
+  class AIWorker(QObject):
+      token_ready    = pyqtSignal(str)
+      response_ready = pyqtSignal(str)
+      error          = pyqtSignal(str)
+      finished       = pyqtSignal()
+
+      def __init__(self, ai_engine, text: str, parent=None):
+          super().__init__(parent)
+          self._ai  = ai_engine
+          self._text = text
+
+      def run(self):
+          try:
+              full = ""
+              for token in self._ai.chat_stream(self._text):
+                  self.token_ready.emit(token)
+                  full += token
+              self.response_ready.emit(full)
+          except Exception as e:
+              self.error.emit(str(e))
+          finally:
+              self.finished.emit()
+
+
+  # ── Основное окно ─────────────────────────────────────────────────────────────
+  class ChatWindow(QWidget):
+      avatar_thinking = pyqtSignal(bool)
+      avatar_speaking = pyqtSignal(bool)
+      avatar_listening= pyqtSignal(bool)
+
+      def __init__(self, ai_engine=None, reminder_system=None,
+                   tts_enabled=True, stt_enabled=False, parent=None):
+          super().__init__(parent)
+          self.ai_engine       = ai_engine
+          self.reminder_system = reminder_system
+          self.tts_enabled     = tts_enabled
+          self.stt_enabled     = stt_enabled
+          self._mic_active     = False
+          self._current_bubble : Optional[MessageBubble] = None
+          self._ai_thread: Optional[QThread] = None
+
+          self._setup_window()
+          self._setup_ui()
+          self.setStyleSheet(STYLE_MAIN)
+          QTimer.singleShot(100, self._welcome)
+
+      def _setup_window(self):
+          self.setWindowTitle("Аники — ИИ-ассистент")
+          self.resize(800, 640)
+          self.setMinimumSize(480, 360)
+          try:
+              pix = QPixmap(32, 32)
+              pix.fill(QColor(13, 13, 30))
+              p = QPainter(pix)
+              p.setPen(QColor("#ff9e44"))
+              p.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+              p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "A")
+              p.end()
+              self.setWindowIcon(QIcon(pix))
+          except Exception:
+              pass
+
+      def _setup_ui(self):
+          root = QVBoxLayout(self)
+          root.setContentsMargins(0, 0, 0, 0)
+          root.setSpacing(0)
+
+          # ── Заголовок ─────────────────────────────────────────────────────
+          header = QWidget()
+          header.setFixedHeight(54)
+          header.setStyleSheet(
+              "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+              "stop:0 #0d0d1e,stop:0.5 #1a0a2e,stop:1 #0d0d1e);"
+              "border-bottom: 1px solid #2a2a4a;"
+          )
+          h_lay = QHBoxLayout(header)
+          h_lay.setContentsMargins(16, 0, 16, 0)
+
+          title_lbl = QLabel("АНИКИ")
+          title_lbl.setStyleSheet(
+              "color:#ff9e44;font-size:22px;font-weight:900;"
+              "letter-spacing:4px;font-family:'Segoe UI';background:transparent;"
+          )
+          self._status_bar = StatusBar()
+
+          h_lay.addWidget(title_lbl)
+          h_lay.addStretch()
+          h_lay.addWidget(self._status_bar)
+
+          root.addWidget(header)
+
+          # ── Вкладки ───────────────────────────────────────────────────────
+          tabs = QTabWidget()
+          tabs.setDocumentMode(True)
+          root.addWidget(tabs)
+
+          # Вкладка «Чат»
+          chat_tab = QWidget()
+          chat_lay = QVBoxLayout(chat_tab)
+          chat_lay.setContentsMargins(0, 0, 0, 0)
+          chat_lay.setSpacing(0)
+
+          # Область сообщений
+          self._scroll = QScrollArea()
+          self._scroll.setWidgetResizable(True)
+          self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+          self._msg_container = QWidget()
+          self._msg_container.setStyleSheet("background: #0d0d1e;")
+          self._msg_layout = QVBoxLayout(self._msg_container)
+          self._msg_layout.setContentsMargins(16, 16, 16, 16)
+          self._msg_layout.setSpacing(6)
+          self._msg_layout.addStretch()
+          self._scroll.setWidget(self._msg_container)
+          chat_lay.addWidget(self._scroll)
+
+          # Индикатор «печатает...»
+          self._typing_label = QLabel("Аники думает...")
+          self._typing_label.setStyleSheet(
+              "color:#ff9e44;font-size:12px;font-style:italic;"
+              "background:#0d0d1e;padding:4px 20px;"
+          )
+          self._typing_label.hide()
+          chat_lay.addWidget(self._typing_label)
+
+          # Панель ввода
+          input_panel = QWidget()
+          input_panel.setStyleSheet(
+              "background:#111128;border-top:1px solid #2a2a4a;"
+          )
+          inp_lay = QHBoxLayout(input_panel)
+          inp_lay.setContentsMargins(12, 10, 12, 10)
+          inp_lay.setSpacing(8)
+
+          self._input = QTextEdit()
+          self._input.setStyleSheet(STYLE_INPUT)
+          self._input.setPlaceholderText("Напиши Аники или говори в микрофон...")
+          self._input.setFixedHeight(44)
+          self._input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+          self._input.installEventFilter(self)
+
+          self._btn_mic = QPushButton("🎤")
+          self._btn_mic.setStyleSheet(STYLE_BTN_MIC)
+          self._btn_mic.setCheckable(True)
+          self._btn_mic.setToolTip("Голосовой ввод")
+          self._btn_mic.setFixedSize(44, 44)
+          self._btn_mic.setVisible(self.stt_enabled)
+          self._btn_mic.toggled.connect(self._toggle_mic)
+
+          self._btn_send = QPushButton("➤")
+          self._btn_send.setStyleSheet(STYLE_BTN_SEND)
+          self._btn_send.setFixedSize(44, 44)
+          self._btn_send.setToolTip("Отправить (Enter)")
+          self._btn_send.clicked.connect(self._send_message)
+
+          inp_lay.addWidget(self._input)
+          if self.stt_enabled:
+              inp_lay.addWidget(self._btn_mic)
+          inp_lay.addWidget(self._btn_send)
+
+          chat_lay.addWidget(input_panel)
+          tabs.addTab(chat_tab, "💬  Чат")
+
+          # Вкладка «Напоминания»
+          from .reminder_tab import ReminderTab
+          try:
+              self._reminder_tab = ReminderTab(self.reminder_system)
+              tabs.addTab(self._reminder_tab, "🔔  Напоминания")
+          except Exception:
+              tabs.addTab(QWidget(), "🔔  Напоминания")
+
+          # Вкладка «Настройки»
+          tabs.addTab(self._make_settings_tab(), "⚙️  Настройки")
+
+          self._tabs = tabs
+
+      def _make_settings_tab(self):
+          w = QWidget()
+          lay = QVBoxLayout(w)
+          lay.setContentsMargins(24, 24, 24, 24)
+          lay.setSpacing(16)
+
+          def row(lbl, wgt):
+              r = QHBoxLayout()
+              l = QLabel(lbl)
+              l.setStyleSheet("color:#aaa;font-size:13px;")
+              l.setFixedWidth(160)
+              r.addWidget(l)
+              r.addWidget(wgt)
+              lay.addLayout(r)
+
+          from PyQt6.QtWidgets import QComboBox, QCheckBox, QSlider
+          from PyQt6.QtCore import Qt as _Qt
+
+          voice_cb = QComboBox()
+          voice_cb.addItems(["Silero (Айдар)", "XTTS-v2 (Билли)", "pyttsx3", "Выкл."])
+          voice_cb.setStyleSheet(
+              "QComboBox{background:#1a1a2e;color:#e8e8f0;border:1px solid #2a2a4a;"
+              "border-radius:8px;padding:6px 12px;}"
+              "QComboBox::drop-down{border:none;}"
+              "QComboBox QAbstractItemView{background:#1a1a2e;color:#e8e8f0;"
+              "selection-background-color:#ff9e44;}"
+          )
+          row("Голос:", voice_cb)
+
+          model_cb = QComboBox()
+          model_cb.addItems(["qwen2.5:7b", "qwen2.5:3b", "mistral", "llama3.2"])
+          model_cb.setStyleSheet(voice_cb.styleSheet())
+          row("Модель LLM:", model_cb)
+
+          tts_check = QCheckBox("Включить озвучку")
+          tts_check.setChecked(self.tts_enabled)
+          tts_check.setStyleSheet("color:#e8e8f0;font-size:13px;")
+          row("TTS:", tts_check)
+
+          lay.addStretch()
+
+          ver_lbl = QLabel("Аники v3.1 — Are you ready?")
+          ver_lbl.setStyleSheet("color:#444;font-size:11px;")
+          ver_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+          lay.addWidget(ver_lbl)
+          return w
+
+      # ── Приветствие ───────────────────────────────────────────────────────────
+      def _welcome(self):
+          if self.ai_engine:
+              self.add_bot_message("Are you ready? Аники здесь! Чем могу помочь, бро?")
+              self._status_bar.set_status("Онлайн", "#50e690")
+          else:
+              self.add_bot_message(
+                  "Бро, запусти Ollama — без него я как без мозга!\n\n"
+                  "1. Скачай: https://ollama.com\n"
+                  "2. В терминале: ollama run qwen2.5\n"
+                  "3. Перезапусти меня — Let's go!"
+              )
+              self._status_bar.set_status("Ollama недоступен", "#ff4444")
+
+          if not self.stt_enabled:
+              self.add_bot_message("Микрофон недоступен — пиши текстом, бро! Are you ready?")
+
+      # ── Сообщения ─────────────────────────────────────────────────────────────
+      def add_bot_message(self, text: str) -> MessageBubble:
+          bubble = MessageBubble(text, is_bot=True)
+          self._msg_layout.insertWidget(self._msg_layout.count() - 1, bubble)
+          QTimer.singleShot(50, self._scroll_to_bottom)
+          return bubble
+
+      def add_user_message(self, text: str):
+          bubble = MessageBubble(text, is_bot=False)
+          self._msg_layout.insertWidget(self._msg_layout.count() - 1, bubble)
+          QTimer.singleShot(50, self._scroll_to_bottom)
+
+      def _scroll_to_bottom(self):
+          sb = self._scroll.verticalScrollBar()
+          sb.setValue(sb.maximum())
+
+      def show_reminder_notification(self, title: str, message: str):
+          self.add_bot_message(f"🔔 **{title}**\n{message}")
+
+      # ── Отправка ──────────────────────────────────────────────────────────────
+      def _send_message(self):
+          text = self._input.toPlainText().strip()
+          if not text:
+              return
+          self._input.clear()
+          self.add_user_message(text)
+
+          if not self.ai_engine:
+              self.add_bot_message("ИИ недоступен — запусти Ollama, бро!")
+              return
+
+          self._start_ai(text)
+
+      def _start_ai(self, text: str):
+          self._typing_label.show()
+          self._status_bar.set_status("Думает...", "#ffaa44", blink=True)
+          self.avatar_thinking.emit(True)
+          self._btn_send.setEnabled(False)
+
+          self._current_bubble = None
+
+          self._ai_thread = QThread(self)
+          self._worker    = AIWorker(self.ai_engine, text)
+          self._worker.moveToThread(self._ai_thread)
+
+          self._ai_thread.started.connect(self._worker.run)
+          self._worker.token_ready.connect(self._on_token)
+          self._worker.response_ready.connect(self._on_response)
+          self._worker.finished.connect(self._on_ai_done)
+          self._worker.error.connect(lambda e: self.add_bot_message(f"Ошибка: {e}"))
+
+          self._ai_thread.start()
+
+      def _on_token(self, token: str):
+          if self._current_bubble is None:
+              self._typing_label.hide()
+              self._current_bubble = self.add_bot_message("")
+              self.avatar_thinking.emit(False)
+              self.avatar_speaking.emit(True)
+          self._current_bubble.append_text(token)
+          self._scroll_to_bottom()
+
+      def _on_response(self, full_text: str):
+          if self.tts_enabled:
+              import threading
+              from core.tts import speak
+              threading.Thread(target=speak, args=(full_text,), daemon=True).start()
+
+      def _on_ai_done(self):
+          self._typing_label.hide()
+          self._status_bar.set_status("Онлайн", "#50e690")
+          self.avatar_thinking.emit(False)
+          self.avatar_speaking.emit(False)
+          self._btn_send.setEnabled(True)
+          self._current_bubble = None
+          if self._ai_thread:
+              self._ai_thread.quit()
+              self._ai_thread.wait()
+
+      # ── Микрофон ──────────────────────────────────────────────────────────────
+      def _toggle_mic(self, on: bool):
+          self._mic_active = on
+          self.avatar_listening.emit(on)
+          if on:
+              self._status_bar.set_status("Слушаю...", "#c060ff", blink=True)
+          else:
+              self._status_bar.set_status("Онлайн", "#50e690")
+
+      def on_voice_input(self, text: str):
+          if text.strip():
+              self._input.setPlainText(text)
+              self._send_message()
+
+      # ── Клавиши ───────────────────────────────────────────────────────────────
+      def eventFilter(self, obj, event):
+          if obj is self._input and event.type() == QEvent.Type.KeyPress:
+              if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                      and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                  self._send_message()
+                  return True
+          return super().eventFilter(obj, event)
+  
