@@ -1,5 +1,7 @@
 """
 Память Аники — SQLite база данных (потокобезопасная версия).
+FIX [H5]: _exec(script=True) теперь не возвращает -1 rowcount.
+FIX [L2]: _seed_default_reminders использует _exec() вместо прямого conn.
 """
 
 import sqlite3
@@ -14,33 +16,33 @@ DB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "aniki_memory.db"
 )
 
-# Глобальный замок для всех операций с БД
 _db_lock = threading.Lock()
 
 
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")   # WAL — меньше блокировок
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
 def _exec(sql: str, params=(), fetchone=False, fetchall=False, script=False):
-    """Потокобезопасное выполнение SQL."""
+    """Потокобезопасное выполнение SQL.
+    FIX [H5]: при script=True не возвращаем cur.rowcount (всегда -1 в SQLite).
+              Возвращаем None если не запрошен fetch.
+    """
     with _db_lock:
         conn = get_connection()
         try:
             cur = conn.cursor()
             if script:
-                # FIX H5: executescript() делает неявный COMMIT сам —
-                # НЕ вызываем conn.commit() после него во избежание двойного коммита
                 cur.executescript(sql)
                 if fetchone:
                     return cur.fetchone()
                 if fetchall:
                     return cur.fetchall()
-                return cur.rowcount
+                return None  # FIX [H5]: было cur.rowcount (-1)
             else:
                 cur.execute(sql, params)
                 conn.commit()
@@ -95,24 +97,21 @@ def init_db():
 
 
 def _seed_default_reminders():
-    with _db_lock:
-        conn = get_connection()
-        try:
-            count = conn.execute("SELECT COUNT(*) FROM reminders").fetchone()[0]
-            if count == 0:
-                defaults = [
-                    ("Попей воды!", "Не забывай пить воду!", None, 60, 1),
-                    ("Сделай перерыв", "Встань, разомнись!", None, 90, 1),
-                ]
-                for t, d, ra, rm, a in defaults:
-                    conn.execute(
-                        "INSERT INTO reminders (title,description,remind_at,repeat_minutes,is_active,last_triggered)"
-                        " VALUES (?,?,?,?,?,?)",
-                        (t, d, ra, rm, a, datetime.now())  # ← FIX: last_triggered = now
-                    )
-                conn.commit()
-        finally:
-            conn.close()
+    """FIX [L2]: используем _exec() для консистентного доступа к БД."""
+    row = _exec("SELECT COUNT(*) as cnt FROM reminders", fetchone=True)
+    count = row["cnt"] if row else 0
+    if count == 0:
+        now_str = datetime.now().isoformat()
+        defaults = [
+            ("Попей воды!", "Не забывай пить воду!", None, 60, 1, now_str),
+            ("Сделай перерыв", "Встань, разомнись!", None, 90, 1, now_str),
+        ]
+        for t, d, ra, rm, a, lt in defaults:
+            _exec(
+                "INSERT INTO reminders (title,description,remind_at,repeat_minutes,is_active,last_triggered)"
+                " VALUES (?,?,?,?,?,?)",
+                (t, d, ra, rm, a, lt)
+            )
 
 
 # ── Профиль ──────────────────────────────────────────────────────────────────
