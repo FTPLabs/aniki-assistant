@@ -2,25 +2,34 @@
 # PyInstaller spec — Аники v2.4
 # OPTIM: агрессивные excludes для CUDA/distributed/dynamo → -40% размера и времени сборки
 # FIX: hookspath=['hooks'] → перекрывает сломанный hook-webrtcvad.py
+# FIX2: _filter_bins обрабатывает 2- и 3-элементные кортежи (PyInstaller 6.x)
 
 import os
-from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_all
 
-# ── Только нужные части torch (CPU-only, без CUDA/distributed) ──
 torch_datas,    torch_bins,    torch_hidden    = collect_all('torch')
 torchaudio_datas, torchaudio_bins, torchaudio_hidden = collect_all('torchaudio')
 fwhisper_datas, fwhisper_bins, fwhisper_hidden = collect_all('faster_whisper')
 ct2_datas,      ct2_bins,      ct2_hidden      = collect_all('ctranslate2')
 sd_datas,       sd_bins,       sd_hidden       = collect_all('sounddevice')
 
-# ── Фильтрация: убираем CUDA DLL и ненужные бинарники torch ──
-def _filter_bins(bins):
-    skip = ('cusparse','cublas','cudnn','curand','cufft','nccl',
-            'nvrtc','nvjpeg','caffe2','fbgemm','_C.cp','libtorch_cuda')
-    return [(dest, src, kind) for dest, src, kind in bins
-            if not any(s in src.lower() for s in skip)]
+# ── Фильтр CUDA DLL — работает с 2-элементными и 3-элементными кортежами ──
+# PyInstaller 6.x: collect_all возвращает (dest, src) — 2 элемента
+# Некоторые хуки возвращают (dest, src, typecode) — 3 элемента
+CUDA_SKIP = (
+    'cusparse', 'cublas', 'cudnn', 'curand', 'cufft', 'nccl',
+    'nvrtc', 'nvjpeg', 'caffe2', 'fbgemm', 'libtorch_cuda',
+)
 
-torch_bins = _filter_bins(torch_bins)
+def _filter_bins(bins):
+    result = []
+    for item in bins:
+        src = item[1]  # src — всегда второй элемент независимо от длины кортежа
+        if not any(s in src.lower() for s in CUDA_SKIP):
+            result.append(item)
+    return result
+
+torch_bins     = _filter_bins(torch_bins)
 torchaudio_bins = _filter_bins(torchaudio_bins)
 
 a = Analysis(
@@ -73,7 +82,7 @@ a = Analysis(
         'torch.backends.cudnn',
         'torch.backends.mkldnn',
         'torch.cuda.amp',
-        # ── Distributed training (не нужно десктоп-приложению) ──────
+        # ── Distributed training ────────────────────────────────────
         'torch.distributed',
         'torch.nn.parallel.distributed',
         'torch.multiprocessing',
@@ -83,18 +92,17 @@ a = Analysis(
         'torch._functorch',
         'torch._decomp',
         'torch.fx',
-        'torch.jit._builtins',
         # ── ONNX экспорт ────────────────────────────────────────────
         'torch.onnx',
         # ── Профилировщик ───────────────────────────────────────────
         'torch.profiler',
-        # ── Quantization (AO) ────────────────────────────────────────
+        # ── Quantization ────────────────────────────────────────────
         'torch.ao',
-        # ── Тесты ───────────────────────────────────────────────────
+        # ── Тесты / dev инструменты ─────────────────────────────────
         'torch.testing',
         'torch.utils.cpp_extension',
         'caffe2',
-        # ── Тяжёлые стандартные пакеты, не используемые в коде ─────
+        # ── Тяжёлые stdlib-модули, не нужные в десктоп-приложении ──
         'unittest',
         'test',
         'tkinter',
@@ -104,12 +112,9 @@ a = Analysis(
         'pandas',
         'IPython',
         'jedi',
-        'pygments',
         'setuptools',
         'pkg_resources',
         'distutils',
-        'email',
-        'http.server',
         'xmlrpc',
         'ftplib',
         'imaplib',
