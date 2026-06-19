@@ -1,5 +1,6 @@
 """
 Поиск DuckDuckGo для Аники — работает без API-ключей.
+FIX [L1]: list[str] → List[str] для совместимости с Python 3.8+.
 """
 
 import urllib.request
@@ -7,7 +8,7 @@ import urllib.parse
 import json
 import re
 import logging
-from typing import Optional
+from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +39,9 @@ def duckduckgo_instant(query: str) -> Optional[str]:
     return None
 
 
-def duckduckgo_html(query: str, max_results: int = 3) -> list[str]:
-    """Парсинг HTML-поиска DuckDuckGo."""
-    results = []
+def duckduckgo_html(query: str, max_results: int = 3) -> List[str]:
+    """Парсинг HTML-поиска DuckDuckGo. FIX [L1]: List[str] вместо list[str]."""
+    results: List[str] = []
     try:
         encoded = urllib.parse.quote(query)
         url = f"https://html.duckduckgo.com/html/?q={encoded}&kl=ru-ru"
@@ -66,7 +67,6 @@ def search(query: str) -> Optional[str]:
     Главная функция поиска. Сначала пробует Instant Answer, потом HTML.
     Возвращает текстовый контекст для ИИ или None если ничего не нашёл.
     """
-    # Убираем команды и обращения из запроса
     clean_query = re.sub(r"^(аники|найди|поищи|что такое|кто такой|расскажи про|объясни)\s+", "",
                          query.lower().strip())
 
