@@ -28,25 +28,25 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-v6-${{ hashFiles('aniki_assistant/requirements.txt') }}
+          key: ${{ runner.os }}-pip-v8-${{ hashFiles('aniki_assistant/requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-pip-v6-
+            ${{ runner.os }}-pip-v8-
 
       - name: Cache PyInstaller dist
         id: cache-dist
         uses: actions/cache@v4
         with:
           path: aniki_assistant/dist
-          key: ${{ runner.os }}-dist-v6-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
+          key: ${{ runner.os }}-dist-v8-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
 
       - name: Cache PyInstaller analysis
         if: steps.cache-dist.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: aniki_assistant/build
-          key: ${{ runner.os }}-pyinstaller-v6-${{ hashFiles('aniki_assistant/aniki.spec') }}
+          key: ${{ runner.os }}-pyinstaller-v8-${{ hashFiles('aniki_assistant/aniki.spec') }}
           restore-keys: |
-            ${{ runner.os }}-pyinstaller-v6-
+            ${{ runner.os }}-pyinstaller-v8-
 
       - name: Install build tools
         run: |
@@ -59,6 +59,63 @@ jobs:
           pip install "PyQt6>=6.6.0" requests numpy psutil sounddevice soundfile
           pip install "faster-whisper>=1.0.0" pyttsx3 pygame "Pillow>=10.0.0"
           pip install pycaw comtypes pywin32 webrtcvad-wheels pyaudio
+
+      - name: Syntax check all Python files
+        working-directory: aniki_assistant
+        shell: cmd
+        run: |
+          python -m py_compile core/personality.py && echo OK personality
+          python -m py_compile core/ai_engine.py   && echo OK ai_engine
+          python -m py_compile core/memory.py      && echo OK memory
+          python -m py_compile core/reminders.py   && echo OK reminders
+          python -m py_compile core/tts.py         && echo OK tts
+          python -m py_compile core/speech.py      && echo OK speech
+          python -m py_compile core/commands.py    && echo OK commands
+          python -m py_compile core/learning.py    && echo OK learning
+          python -m py_compile core/search.py      && echo OK search
+          python -m py_compile auto_setup.py       && echo OK auto_setup
+          python -m py_compile main.py             && echo OK main
+
+      - name: Download Billy audio clips
+        working-directory: aniki_assistant
+        shell: python
+        run: |
+          import os, urllib.request, time
+          dest = os.path.join("data", "voice")
+          os.makedirs(dest, exist_ok=True)
+          BASE = "https://archive.org/download/billy-herrington-voice-pack"
+          clips = [
+            "are_you_ready", "lets_go", "no_pain_no_gain", "yeah_buddy",
+            "come_on", "right_here_right_now", "good_job", "oh_my_god",
+            "incredible", "thats_right", "nice", "oh_yeah", "take_it_easy",
+            "do_it", "dont_stop", "hell_yeah", "wow", "beautiful",
+            "unbelievable", "work_it", "push_it", "i_like_it", "feel_the_burn",
+            "im_your_man", "mans_world", "wrestle_with_the_best",
+          ]
+          ok = fail = 0
+          for name in clips:
+            fname = f"{name}.mp3"
+            fpath = os.path.join(dest, fname)
+            if os.path.exists(fpath) and os.path.getsize(fpath) > 1000:
+              print(f"SKIP {fname}")
+              ok += 1
+              continue
+            url = f"{BASE}/{fname}"
+            try:
+              urllib.request.urlretrieve(url, fpath)
+              size = os.path.getsize(fpath)
+              if size < 1000:
+                os.remove(fpath)
+                raise ValueError(f"too small: {size}b")
+              print(f"OK {fname} ({size//1024}KB)")
+              ok += 1
+            except Exception as e:
+              print(f"FAIL {fname}: {e}")
+              fail += 1
+            time.sleep(0.3)
+          print(f"=== Audio: {ok} OK, {fail} FAIL ===")
+          if fail > ok:
+            print("WARNING: most clips failed, TTS will use pyttsx3 fallback")
 
       - name: Create app icon
         working-directory: aniki_assistant
@@ -88,31 +145,21 @@ jobs:
           }
           if (-not $found) { Write-Error "Aniki.exe not found!"; exit 1 }
 
-      - name: Smoke test EXE (no crash on startup)
+      - name: Smoke test EXE
         shell: pwsh
         run: |
           $paths = @("aniki_assistant/dist/Aniki/Aniki.exe", "aniki_assistant/dist/Aniki.exe")
           $exe = $null
           foreach ($p in $paths) { if (Test-Path $p) { $exe = (Resolve-Path $p).Path; break } }
-          Write-Host "=== Smoke test: $exe ==="
-          $tmpOut = [System.IO.Path]::GetTempFileName()
-          $tmpErr = [System.IO.Path]::GetTempFileName()
-          $proc = Start-Process -FilePath $exe `
-            -RedirectStandardOutput $tmpOut `
-            -RedirectStandardError $tmpErr `
-            -WindowStyle Hidden -PassThru
-          $exited = $proc.WaitForExit(5000)
-          $outContent = Get-Content $tmpOut -ErrorAction SilentlyContinue | Select-Object -First 30
-          $errContent = Get-Content $tmpErr -ErrorAction SilentlyContinue
-          if ($outContent) { Write-Host "--- STDOUT ---"; $outContent | ForEach-Object { Write-Host $_ } }
-          if ($errContent) { Write-Host "--- STDERR ---"; $errContent | ForEach-Object { Write-Host $_ } }
-          Remove-Item $tmpOut, $tmpErr -ErrorAction SilentlyContinue
+          Write-Host "Smoke test: $exe"
+          $proc = Start-Process -FilePath $exe -WindowStyle Hidden -PassThru
+          $exited = $proc.WaitForExit(8000)
           if ($exited) {
-            if ($proc.ExitCode -ne 0) { Write-Error "Smoke test FAILED: exit code $($proc.ExitCode)"; exit 1 }
+            if ($proc.ExitCode -ne 0) { Write-Error "FAILED: exit $($proc.ExitCode)"; exit 1 }
             Write-Host "OK: EXE exited cleanly"
           } else {
-            Write-Host "OK: EXE running after 5s (GUI healthy)"
-            $proc.Kill(); $proc.WaitForExit(2000) | Out-Null
+            Write-Host "OK: EXE running after 8s (GUI healthy)"
+            $proc.Kill()
           }
 
       - name: Zip release bundle
@@ -140,17 +187,17 @@ jobs:
           body: |
             ## Аники ${{ github.ref_name }}
 
-            ### Что нового
-            - **silero-vad**: мгновенный ML VAD вместо webrtcvad — нет задержек при старте
-            - **30+ гачи-клипов** Билли Херрингтона — умный подбор по смыслу ответа
-            - **Авто-скачивание**: клипы + лучшая ИИ-модель (qwen2.5:7b) загружаются при первом запуске
-            - **qwen2.5:7b** как основная модель — лучше Mistral по всем метрикам
-            - **Smoke test** в CI — сборка не публикуется если .exe падает при старте
+            ### Исправлено
+            - [CRITICAL] ModuleNotFoundError core.personality — исправлен
+            - [CRITICAL] speech.py / tts.py / auto_setup.py — IndentationError исправлены
+            - [HIGH] reminders.py — IndentationError и ImportError исправлены
+            - [HIGH] memory.py — get_conversation_history возвращает []
+            - [MEDIUM] Кэш ИИ ограничен 200 записями
+            - Все клипы Билли Херрингтона включены в .exe
 
             ### Установка
             1. Установи [Ollama](https://ollama.com)
             2. В cmd: `ollama run qwen2.5:7b`
             3. Распакуй архив, запусти `Aniki.exe`
 
-            > Гачи-клипы и лучшая модель скачаются автоматически при первом запуске.
-            > Требования: Windows 10/11 x64, 8 GB RAM минимум.
+            > Требования: Windows 10/11 x64, 8 GB RAM.
