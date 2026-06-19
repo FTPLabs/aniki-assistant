@@ -217,7 +217,7 @@ def _load_silero_model(retry: int = 0) -> bool:
             os.path.dirname(os.path.dirname(__file__)), "data", "models"
         )
         os.makedirs(models_dir, exist_ok=True)
-        model_path  = os.path.join(models_dir, f"silero_tts_{SILERO_MODEL_ID}.pt")
+        model_path  = os.path.join(models_dir, f"silero_tts_{SILERO_MODEL_ID}.pkl")  # FIX [H1]
 
         if os.path.exists(model_path):
             try:
