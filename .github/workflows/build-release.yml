@@ -24,25 +24,38 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      # FIX [M4]: убрали хардкод пути 3.11.9 → используем pip cache от setup-python
-      # Кэш pip (зависимости) — сбрасывается при изменении requirements.txt
+      # ── УРОВЕНЬ 1: кэш pip-пакетов ────────────────────────────────────────
+      # Сбрасывается только при изменении requirements.txt
       - name: Cache pip packages
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-v3-${{ hashFiles('aniki_assistant/requirements.txt') }}
+          key: ${{ runner.os }}-pip-v4-${{ hashFiles('aniki_assistant/requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-pip-v3-
+            ${{ runner.os }}-pip-v4-
 
-      # Кэш PyInstaller build/ (анализ torch — самый медленный шаг)
+      # ── УРОВЕНЬ 2: кэш готового dist/ ──────────────────────────────────────
+      # Если spec И requirements не изменились → PyInstaller полностью пропускается
+      # Экономия: ~35 мин → ~3 мин при cache-hit
+      - name: Cache PyInstaller dist (главная оптимизация)
+        id: cache-dist
+        uses: actions/cache@v4
+        with:
+          path: aniki_assistant/dist
+          key: ${{ runner.os }}-dist-v4-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt') }}
+
+      # ── УРОВЕНЬ 3: кэш анализа PyInstaller ────────────────────────────────
+      # При cache-miss ускоряет повторный анализ
       - name: Cache PyInstaller analysis
+        if: steps.cache-dist.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: aniki_assistant/build
-          key: ${{ runner.os }}-pyinstaller-v3-${{ hashFiles('aniki_assistant/aniki.spec') }}
+          key: ${{ runner.os }}-pyinstaller-v4-${{ hashFiles('aniki_assistant/aniki.spec') }}
           restore-keys: |
-            ${{ runner.os }}-pyinstaller-v3-
+            ${{ runner.os }}-pyinstaller-v4-
 
+      # ── Установка зависимостей ─────────────────────────────────────────────
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
@@ -55,15 +68,23 @@ jobs:
           pip install "faster-whisper>=1.0.0" pyttsx3 pygame "Pillow>=10.0.0"
           pip install pycaw comtypes pywin32 webrtcvad-wheels pyaudio
 
+      # ── Иконка (быстро, всегда нужна) ─────────────────────────────────────
       - name: Create app icon
         working-directory: aniki_assistant
         run: python create_icon_ci.py
 
+      # ── PyInstaller (пропускается при cache-hit на dist/) ─────────────────
       - name: Bundle with PyInstaller
+        if: steps.cache-dist.outputs.cache-hit != 'true'
         working-directory: aniki_assistant
         run: pyinstaller aniki.spec --noconfirm
         shell: cmd
 
+      - name: Skip build notice
+        if: steps.cache-dist.outputs.cache-hit == 'true'
+        run: echo "✓ cache-hit — PyInstaller пропущен, используем dist/ из кэша"
+
+      # ── Проверка и упаковка ────────────────────────────────────────────────
       - name: Verify EXE
         shell: pwsh
         run: |
