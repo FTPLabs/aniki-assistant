@@ -1,6 +1,6 @@
 """
-ИИ-движок Аники v2.3 — qwen2.5:7b + краткие ответы + память + поиск.
-FIX [C1/H1]: _init_lock + _search_lock — thread-safe доступ к _initialized и search globals.
+ИИ-движок Аники v3.0 — мульти-агент роутер + 7 специализированных агентов.
+Быстрее, умнее, живее. No pain no gain!
 """
 
 import requests
@@ -8,9 +8,10 @@ import json
 import re
 import logging
 import threading
+import time
 from typing import Optional, List, Dict, Generator
 
-from .personality import SYSTEM_PROMPT, get_phrase
+from .personality import SYSTEM_PROMPT, AGENT_PROMPTS, get_phrase, classify_request
 from .memory import (
     get_conversation_history, add_message, build_context_string,
     add_fact, set_profile, forget_last_messages, forget_messages_about,
@@ -25,16 +26,33 @@ from .learning import (
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
-
 DEFAULT_MODEL = "qwen2.5:7b"
-
 FALLBACK_MODELS = [
     "qwen2.5:7b", "qwen2.5:3b", "qwen2.5",
-    "llama3.2:3b", "llama3.2",
-    "mistral", "gemma2", "phi3", "deepseek", "llama3", "llama2",
+    "llama3.2:3b", "llama3.2", "mistral",
+    "gemma2", "phi3", "deepseek", "llama3", "llama2",
 ]
 
-# FIX [H1]: защищаем глобалы поиска отдельным локом
+# ── Кэш быстрых ответов (часто задаваемые) ──────────────────────────────────
+_QUICK_CACHE: Dict[str, str] = {}
+_QUICK_CACHE_TTL: Dict[str, float] = {}
+_CACHE_LOCK = threading.Lock()
+_CACHE_TTL = 300  # 5 минут
+
+
+def _cache_get(key: str) -> Optional[str]:
+    with _CACHE_LOCK:
+        if key in _QUICK_CACHE and time.time() - _QUICK_CACHE_TTL.get(key, 0) < _CACHE_TTL:
+            return _QUICK_CACHE[key]
+    return None
+
+
+def _cache_set(key: str, value: str):
+    with _CACHE_LOCK:
+        _QUICK_CACHE[key] = value
+        _QUICK_CACHE_TTL[key] = time.time()
+
+
 _search_lock = threading.Lock()
 _search_available: Optional[bool] = None
 _search_checked_at: float = 0.0
@@ -42,7 +60,6 @@ _search_checked_at: float = 0.0
 
 def _try_search(query: str) -> Optional[str]:
     global _search_available, _search_checked_at
-    import time
     now = time.time()
     with _search_lock:
         if _search_available is None or (now - _search_checked_at) > 300:
@@ -119,7 +136,7 @@ def _handle_forget(text: str) -> Optional[str]:
                 return f"Стёр всё — {n} сообщений. Fresh start!"
             elif kind == "last":
                 n = forget_last_messages(4)
-                return f"Забыл последний обмен ({n} сообщ.). Come on!"
+                return f"Забыл последний обмен ({n} сообщ.)."
             elif kind == "topic" and m.lastindex:
                 topic = m.group(1).strip().rstrip(".,!?")
                 total = forget_messages_about(topic) + forget_facts_about(topic)
@@ -147,7 +164,6 @@ def _check_memory_commands(text: str):
         "запомни", "не забудь", "сохрани",
         "меня зовут", "моё имя", "я работаю",
         "мне нравится", "я люблю", "я не люблю",
-        "я живу", "мой возраст", "я учусь",
     ]
     text_lower = text.lower()
     for trigger in triggers:
@@ -171,12 +187,23 @@ def _clean_reply(text: str) -> str:
     return text.strip()
 
 
+# ── Параметры модели по типу агента — быстрее и точнее ──────────────────────
+_AGENT_OPTIONS = {
+    "command":    {"temperature": 0.5,  "num_predict": 64,  "top_p": 0.9},
+    "search":     {"temperature": 0.6,  "num_predict": 256, "top_p": 0.9},
+    "memory":     {"temperature": 0.5,  "num_predict": 128, "top_p": 0.9},
+    "creative":   {"temperature": 0.9,  "num_predict": 512, "top_p": 0.95},
+    "knowledge":  {"temperature": 0.65, "num_predict": 300, "top_p": 0.9},
+    "chat":       {"temperature": 0.8,  "num_predict": 150, "top_p": 0.92},
+    "motivation": {"temperature": 0.85, "num_predict": 150, "top_p": 0.92},
+}
+
+
 class AnikiAI:
 
     def __init__(self, model: Optional[str] = None):
         self.model = model
         self._initialized = False
-        # FIX [H1]: лок для безопасного доступа к _initialized из разных потоков
         self._init_lock = threading.Lock()
         init_learning_table()
 
@@ -193,15 +220,17 @@ class AnikiAI:
             self._initialized = True
             return True
 
-    def _build_messages(self, user_message: str, search_context: str = "") -> List[Dict]:
+    def _build_messages(self, user_message: str, search_context: str = "",
+                        agent_type: str = "chat") -> List[Dict]:
         context = build_context_string()
-        system  = SYSTEM_PROMPT
+        system = AGENT_PROMPTS.get(agent_type, SYSTEM_PROMPT)
         if context:
             system += f"\n\nПАМЯТЬ О ПОЛЬЗОВАТЕЛЕ:\n{context}"
         if search_context:
             system += f"\n\nНАЙДЕНО В ИНТЕРНЕТЕ:\n{search_context}"
         messages = [{"role": "system", "content": system}]
-        messages.extend(get_conversation_history(limit=40))
+        # Уменьшили историю с 40 до 20 — быстрее
+        messages.extend(get_conversation_history(limit=20))
         messages.append({"role": "user", "content": user_message})
         return messages
 
@@ -210,12 +239,14 @@ class AnikiAI:
             {"role": "system", "content": (
                 "Ты — эксперт по промптам для нейросетей. "
                 "Напиши чёткий промпт на русском. "
-                "Только промпт — без объяснений. Начни сразу с промпта."
+                "Только промпт — без объяснений."
             )},
             {"role": "user", "content": f"Промпт для: {topic}"},
         ]
 
-    def _ollama_request(self, messages: List[Dict], stream: bool = False):
+    def _ollama_request(self, messages: List[Dict], stream: bool = False,
+                        agent_type: str = "chat"):
+        opts = _AGENT_OPTIONS.get(agent_type, _AGENT_OPTIONS["chat"])
         return requests.post(
             f"{OLLAMA_BASE_URL}/api/chat",
             json={
@@ -223,15 +254,13 @@ class AnikiAI:
                 "messages": messages,
                 "stream":   stream,
                 "options": {
-                    "temperature":    0.7,
-                    "top_p":          0.9,
-                    "num_ctx":        8192,
-                    "repeat_penalty": 1.1,
-                    "num_predict":    256,
+                    **opts,
+                    "num_ctx":        4096,
+                    "repeat_penalty": 1.15,
                 },
             },
             stream=stream,
-            timeout=120 if stream else 90,
+            timeout=90 if stream else 60,
         )
 
     def _pre_process(self, user_message: str):
@@ -239,32 +268,32 @@ class AnikiAI:
             initialized = self._initialized
         if not initialized:
             if not self.initialize():
-                return "Бро, Ollama не запущен! Установи и запусти модель.", None, "", None
+                return get_phrase("ollama_offline"), None, "", None, "chat"
 
         feedback = check_feedback(user_message)
         if feedback == "positive":
             confirm_last_response()
-            reply = get_phrase("learned")
+            reply = get_phrase("positive_feedback")
             add_message("user", user_message)
             add_message("assistant", reply)
-            return reply, None, "", None
+            return reply, None, "", None, "chat"
         if feedback == "negative":
-            reply = "Понял! Запомнил — исправлюсь."
+            reply = get_phrase("negative_feedback")
             add_message("user", user_message)
             add_message("assistant", reply)
-            return reply, None, "", None
+            return reply, None, "", None, "chat"
 
         forget_reply = _handle_forget(user_message)
         if forget_reply is not None:
             add_message("user", user_message)
             add_message("assistant", forget_reply)
-            return forget_reply, None, "", None
+            return forget_reply, None, "", None, "memory"
 
         memory_reply = _handle_memory_show(user_message)
         if memory_reply is not None:
             add_message("user", user_message)
             add_message("assistant", memory_reply)
-            return memory_reply, None, "", None
+            return memory_reply, None, "", None, "memory"
 
         cmd = try_parse_command(user_message)
         if cmd is not None:
@@ -272,73 +301,50 @@ class AnikiAI:
             add_message("user", user_message)
             add_message("assistant", message)
             save_last_exchange(user_message, message)
-            return message, None, "", None
+            return message, None, "", None, "command"
 
         _check_memory_commands(user_message)
-        prompt_topic   = _handle_prompt_request(user_message)
-        learned        = find_learned_response(user_message)
+        prompt_topic = _handle_prompt_request(user_message)
+        learned = find_learned_response(user_message)
+
+        # Мульти-агент роутинг — определяем специализацию
+        agent_type = classify_request(user_message)
+
         search_context = ""
-        if not learned and not prompt_topic:
+        if not learned and not prompt_topic and agent_type in ("search", "knowledge"):
             sr = _try_search(user_message)
             if sr:
                 search_context = sr
 
-        return None, prompt_topic, search_context, learned
-
-    def chat(self, user_message: str) -> str:
-        early, prompt_topic, search_context, learned = self._pre_process(user_message)
-        if early is not None:
-            return early
-
-        try:
-            if prompt_topic:
-                messages = self._build_prompt_messages(prompt_topic)
-            else:
-                messages = self._build_messages(user_message, search_context)
-                if learned:
-                    messages[-1]["content"] += f"\n\n[Из памяти: {learned[:300]}]"
-
-            resp = self._ollama_request(messages, stream=False)
-            if resp.status_code == 200:
-                raw = resp.json().get("message", {}).get("content", "")
-                if raw:
-                    reply = _clean_reply(raw)
-                    if prompt_topic:
-                        reply = mark_as_prompt(reply)
-                    elif search_context:
-                        reply = get_phrase("search_result") + "\n" + reply
-                    add_message("user", user_message)
-                    add_message("assistant", reply)
-                    save_last_exchange(user_message, reply)
-                    return reply
-            return "Что-то пошло не так. Let me try again!"
-
-        except requests.Timeout:
-            return "Думаю... No pain no gain — подожди!"
-        except requests.ConnectionError:
-            return "Ollama недоступен. Убедись что запущен!"
-        except Exception as e:
-            logger.error(f"Ошибка чата: {e}")
-            return f"Ошибка: {e}"
+        return None, prompt_topic, search_context, learned, agent_type
 
     def chat_stream(self, user_message: str) -> Generator[str, None, None]:
-        early, prompt_topic, search_context, learned = self._pre_process(user_message)
+        early, prompt_topic, search_context, learned, agent_type = self._pre_process(user_message)
         if early is not None:
             yield early
             return
+
+        # Быстрый кэш — не запрашиваем LLM повторно
+        cache_key = f"{agent_type}:{user_message[:100]}"
+        if agent_type in ("knowledge",) and not search_context and not learned:
+            cached = _cache_get(cache_key)
+            if cached:
+                logger.debug(f"Cache hit: {cache_key[:50]}")
+                yield cached
+                return
 
         try:
             if prompt_topic:
                 messages = self._build_prompt_messages(prompt_topic)
                 yield PROMPT_MARKER
             else:
-                messages = self._build_messages(user_message, search_context)
+                messages = self._build_messages(user_message, search_context, agent_type)
                 if learned:
-                    messages[-1]["content"] += f"\n\n[Из памяти: {learned[:300]}]"
+                    messages[-1]["content"] += f"\n\n[Из памяти: {learned[:200]}]"
                 if search_context:
                     yield get_phrase("search_result") + "\n"
 
-            resp       = self._ollama_request(messages, stream=True)
+            resp       = self._ollama_request(messages, stream=True, agent_type=agent_type)
             full_reply = ""
 
             for line in resp.iter_lines():
@@ -362,7 +368,19 @@ class AnikiAI:
                 add_message("user", user_message)
                 add_message("assistant", full_reply)
                 save_last_exchange(user_message, full_reply)
+                if agent_type == "knowledge" and not search_context:
+                    _cache_set(cache_key, full_reply)
 
+        except requests.Timeout:
+            yield "Думаю... подожди секунду, бро!"
+        except requests.ConnectionError:
+            yield get_phrase("ollama_offline")
         except Exception as e:
             logger.error(f"Ошибка стриминга: {e}")
-            yield f"Ошибка: {e}"
+            yield get_phrase("error")
+
+    def chat(self, user_message: str) -> str:
+        result = ""
+        for chunk in self.chat_stream(user_message):
+            result += chunk
+        return result
