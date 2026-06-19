@@ -28,25 +28,25 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-v5-${{ hashFiles('aniki_assistant/requirements.txt') }}
+          key: ${{ runner.os }}-pip-v6-${{ hashFiles('aniki_assistant/requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-pip-v5-
+            ${{ runner.os }}-pip-v6-
 
       - name: Cache PyInstaller dist
         id: cache-dist
         uses: actions/cache@v4
         with:
           path: aniki_assistant/dist
-          key: ${{ runner.os }}-dist-v5-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
+          key: ${{ runner.os }}-dist-v6-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
 
       - name: Cache PyInstaller analysis
         if: steps.cache-dist.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: aniki_assistant/build
-          key: ${{ runner.os }}-pyinstaller-v5-${{ hashFiles('aniki_assistant/aniki.spec') }}
+          key: ${{ runner.os }}-pyinstaller-v6-${{ hashFiles('aniki_assistant/aniki.spec') }}
           restore-keys: |
-            ${{ runner.os }}-pyinstaller-v5-
+            ${{ runner.os }}-pyinstaller-v6-
 
       - name: Install build tools
         run: |
@@ -88,10 +88,6 @@ jobs:
           }
           if (-not $found) { Write-Error "Aniki.exe not found!"; exit 1 }
 
-      # Smoke test: запуск EXE на 5 сек с захватом вывода в файлы.
-      # stdout/stderr редиректим в tmp-файлы (нет проблем с PowerShell Runspace).
-      # Краш сразу (exit != 0) = missing DLL / ошибка импорта / падение при старте.
-      # Всё ещё работает после 5с = GUI OK.
       - name: Smoke test EXE (no crash on startup)
         shell: pwsh
         run: |
@@ -99,46 +95,24 @@ jobs:
           $exe = $null
           foreach ($p in $paths) { if (Test-Path $p) { $exe = (Resolve-Path $p).Path; break } }
           Write-Host "=== Smoke test: $exe ==="
-
           $tmpOut = [System.IO.Path]::GetTempFileName()
           $tmpErr = [System.IO.Path]::GetTempFileName()
-
-          # Start-Process перенаправляет stdout/stderr в файлы — без Runspace-проблем
           $proc = Start-Process -FilePath $exe `
             -RedirectStandardOutput $tmpOut `
             -RedirectStandardError $tmpErr `
-            -WindowStyle Hidden `
-            -PassThru
-
-          # Ждём 5 секунд
+            -WindowStyle Hidden -PassThru
           $exited = $proc.WaitForExit(5000)
-
-          # Читаем захваченный вывод из файлов
           $outContent = Get-Content $tmpOut -ErrorAction SilentlyContinue | Select-Object -First 30
           $errContent = Get-Content $tmpErr -ErrorAction SilentlyContinue
-
-          if ($outContent) {
-            Write-Host "--- STDOUT (first 30 lines) ---"
-            $outContent | ForEach-Object { Write-Host $_ }
-          }
-          if ($errContent) {
-            Write-Host "--- STDERR ---"
-            $errContent | ForEach-Object { Write-Host $_ }
-          }
-
+          if ($outContent) { Write-Host "--- STDOUT ---"; $outContent | ForEach-Object { Write-Host $_ } }
+          if ($errContent) { Write-Host "--- STDERR ---"; $errContent | ForEach-Object { Write-Host $_ } }
           Remove-Item $tmpOut, $tmpErr -ErrorAction SilentlyContinue
-
           if ($exited) {
-            $code = $proc.ExitCode
-            if ($code -ne 0) {
-              Write-Error "SMOKE TEST FAILED: EXE exited with code $code (see STDERR above)"
-              exit 1
-            }
-            Write-Host "OK: EXE exited cleanly (code 0)"
+            if ($proc.ExitCode -ne 0) { Write-Error "Smoke test FAILED: exit code $($proc.ExitCode)"; exit 1 }
+            Write-Host "OK: EXE exited cleanly"
           } else {
-            Write-Host "OK: EXE still running after 5s (GUI app healthy)"
-            $proc.Kill()
-            $proc.WaitForExit(2000) | Out-Null
+            Write-Host "OK: EXE running after 5s (GUI healthy)"
+            $proc.Kill(); $proc.WaitForExit(2000) | Out-Null
           }
 
       - name: Zip release bundle
@@ -166,9 +140,17 @@ jobs:
           body: |
             ## Аники ${{ github.ref_name }}
 
-            **Установка:**
+            ### Что нового
+            - **silero-vad**: мгновенный ML VAD вместо webrtcvad — нет задержек при старте
+            - **30+ гачи-клипов** Билли Херрингтона — умный подбор по смыслу ответа
+            - **Авто-скачивание**: клипы + лучшая ИИ-модель (qwen2.5:7b) загружаются при первом запуске
+            - **qwen2.5:7b** как основная модель — лучше Mistral по всем метрикам
+            - **Smoke test** в CI — сборка не публикуется если .exe падает при старте
+
+            ### Установка
             1. Установи [Ollama](https://ollama.com)
-            2. В cmd: `ollama run mistral`
+            2. В cmd: `ollama run qwen2.5:7b`
             3. Распакуй архив, запусти `Aniki.exe`
 
-            **Требования:** Windows 10/11 x64
+            > Гачи-клипы и лучшая модель скачаются автоматически при первом запуске.
+            > Требования: Windows 10/11 x64, 8 GB RAM минимум.
