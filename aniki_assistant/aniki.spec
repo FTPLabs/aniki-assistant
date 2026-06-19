@@ -1,7 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec — Аники v2.3
-# FIX M2: убран устаревший block_cipher (PyInstaller 6.x)
-# FIX C2: collect_all встроен прямо в spec — torch/torchaudio/silero/ctranslate2/faster_whisper
+# PyInstaller spec — Аники v2.4
+# FIX: убран устаревший block_cipher (PyInstaller 6.x)
+# FIX: hookspath=['hooks'] → перекрывает сломанный системный hook-webrtcvad.py
+#      (webrtcvad-wheels не регистрирует dist-info как 'webrtcvad')
 
 import os
 from PyInstaller.utils.hooks import collect_all
@@ -53,7 +54,8 @@ a = Analysis(
         'json',
         're',
     ] + torch_hidden + torchaudio_hidden + fwhisper_hidden + ct2_hidden + sd_hidden,
-    hookspath=[],
+    # FIX: наш hooks/ перекрывает сломанный hook-webrtcvad.py из _pyinstaller_hooks_contrib
+    hookspath=['hooks'],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
