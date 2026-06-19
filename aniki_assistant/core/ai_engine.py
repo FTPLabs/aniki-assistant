@@ -39,8 +39,15 @@ _QUICK_CACHE_TTL: Dict[str, float] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_TTL = 300  # 5 минут
 
+# FIX [M2]: персональные/динамические запросы не кэшируем
+_NO_CACHE_PATTERNS = re.compile(
+    r"(как меня зовут|что ты знаешь|что ты помнишь|напомни|погода|сейчас|сколько время)",
+    re.I
+)
+
 
 def _cache_get(key: str) -> Optional[str]:
+    if _NO_CACHE_PATTERNS.search(key): return None  # FIX [M2]
     with _CACHE_LOCK:
         if key in _QUICK_CACHE and time.time() - _QUICK_CACHE_TTL.get(key, 0) < _CACHE_TTL:
             return _QUICK_CACHE[key]
