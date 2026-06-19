@@ -1,10 +1,10 @@
 """
-TTS Аники v3.2 — голос Билли Херрингтона + 30+ гачи-клипов.
+TTS Аники v3.3 — голос Билли Херрингтона + 30+ гачи-клипов.
 Логика: сначала ищем подходящий клип по смыслу ответа,
 если не нашли — XTTS с голосом Билли, fallback Silero/pyttsx3.
 """
 
-import os, logging, threading, queue, re, random
+import os, logging, threading, queue, re, random, urllib.request, time
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
@@ -23,8 +23,6 @@ SILERO_MODEL_ID = "v4_ru"
 _CLIPS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "voice")
 
 # ── Полная библиотека гачи-клипов Билли ──────────────────────────────────────
-# Формат: "ключевое слово/фраза" → "файл.mp3"
-# Ключи — на английском (Билли говорил по-английски), русские — для контекста
 BILLY_CLIPS = {
       # Приветствие / готовность
       "are you ready":         "are_you_ready.mp3",
@@ -99,40 +97,38 @@ CONTEXT_CLIPS = {
       r"(подожди|секунд|минут|думаю)":                     "take_it_easy.mp3",
 }
 
-# Клипы для случайного использования (разнообразие)
+# Клипы для случайного использования
 RANDOM_POOL = ["come_on.mp3", "lets_go.mp3", "yeah_buddy.mp3", "nice.mp3", "thats_right.mp3"]
 
 # ── Скачивание клипов с Archive.org ──────────────────────────────────────────
-# Коллекция: https://archive.org/details/billy-herrington-voice-pack
 BILLY_ARCHIVE_BASE = "https://archive.org/download/billy-herrington-voice-pack"
 BILLY_CLIPS_DOWNLOAD = {
-      "are_you_ready.mp3":        f"{BILLY_ARCHIVE_BASE}/are_you_ready.mp3",
-      "lets_go.mp3":              f"{BILLY_ARCHIVE_BASE}/lets_go.mp3",
-      "no_pain_no_gain.mp3":      f"{BILLY_ARCHIVE_BASE}/no_pain_no_gain.mp3",
-      "yeah_buddy.mp3":           f"{BILLY_ARCHIVE_BASE}/yeah_buddy.mp3",
-      "come_on.mp3":              f"{BILLY_ARCHIVE_BASE}/come_on.mp3",
-      "right_here_right_now.mp3": f"{BILLY_ARCHIVE_BASE}/right_here_right_now.mp3",
-      "im_your_man.mp3":          f"{BILLY_ARCHIVE_BASE}/im_your_man.mp3",
-      "mans_world.mp3":           f"{BILLY_ARCHIVE_BASE}/mans_world.mp3",
-      "wrestle_with_the_best.mp3":f"{BILLY_ARCHIVE_BASE}/wrestle_with_the_best.mp3",
-      "good_job.mp3":             f"{BILLY_ARCHIVE_BASE}/good_job.mp3",
-      "oh_my_god.mp3":            f"{BILLY_ARCHIVE_BASE}/oh_my_god.mp3",
-      "incredible.mp3":           f"{BILLY_ARCHIVE_BASE}/incredible.mp3",
-      "thats_right.mp3":          f"{BILLY_ARCHIVE_BASE}/thats_right.mp3",
-      "nice.mp3":                 f"{BILLY_ARCHIVE_BASE}/nice.mp3",
-      "oh_yeah.mp3":              f"{BILLY_ARCHIVE_BASE}/oh_yeah.mp3",
-      "take_it_easy.mp3":         f"{BILLY_ARCHIVE_BASE}/take_it_easy.mp3",
-      "do_it.mp3":                f"{BILLY_ARCHIVE_BASE}/do_it.mp3",
-      "dont_stop.mp3":            f"{BILLY_ARCHIVE_BASE}/dont_stop.mp3",
-      "hell_yeah.mp3":            f"{BILLY_ARCHIVE_BASE}/hell_yeah.mp3",
-      "wow.mp3":                  f"{BILLY_ARCHIVE_BASE}/wow.mp3",
-      "beautiful.mp3":            f"{BILLY_ARCHIVE_BASE}/beautiful.mp3",
-      "unbelievable.mp3":         f"{BILLY_ARCHIVE_BASE}/unbelievable.mp3",
-      "work_it.mp3":              f"{BILLY_ARCHIVE_BASE}/work_it.mp3",
-      "push_it.mp3":              f"{BILLY_ARCHIVE_BASE}/push_it.mp3",
-      "i_like_it.mp3":            f"{BILLY_ARCHIVE_BASE}/i_like_it.mp3",
-      "feel_the_burn.mp3":        f"{BILLY_ARCHIVE_BASE}/feel_the_burn.mp3",
-      "oh_yeah.mp3":              f"{BILLY_ARCHIVE_BASE}/oh_yeah.mp3",
+      "are_you_ready.mp3":         f"{BILLY_ARCHIVE_BASE}/are_you_ready.mp3",
+      "lets_go.mp3":               f"{BILLY_ARCHIVE_BASE}/lets_go.mp3",
+      "no_pain_no_gain.mp3":       f"{BILLY_ARCHIVE_BASE}/no_pain_no_gain.mp3",
+      "yeah_buddy.mp3":            f"{BILLY_ARCHIVE_BASE}/yeah_buddy.mp3",
+      "come_on.mp3":               f"{BILLY_ARCHIVE_BASE}/come_on.mp3",
+      "right_here_right_now.mp3":  f"{BILLY_ARCHIVE_BASE}/right_here_right_now.mp3",
+      "im_your_man.mp3":           f"{BILLY_ARCHIVE_BASE}/im_your_man.mp3",
+      "mans_world.mp3":            f"{BILLY_ARCHIVE_BASE}/mans_world.mp3",
+      "wrestle_with_the_best.mp3": f"{BILLY_ARCHIVE_BASE}/wrestle_with_the_best.mp3",
+      "good_job.mp3":              f"{BILLY_ARCHIVE_BASE}/good_job.mp3",
+      "oh_my_god.mp3":             f"{BILLY_ARCHIVE_BASE}/oh_my_god.mp3",
+      "incredible.mp3":            f"{BILLY_ARCHIVE_BASE}/incredible.mp3",
+      "thats_right.mp3":           f"{BILLY_ARCHIVE_BASE}/thats_right.mp3",
+      "nice.mp3":                  f"{BILLY_ARCHIVE_BASE}/nice.mp3",
+      "oh_yeah.mp3":               f"{BILLY_ARCHIVE_BASE}/oh_yeah.mp3",
+      "take_it_easy.mp3":          f"{BILLY_ARCHIVE_BASE}/take_it_easy.mp3",
+      "do_it.mp3":                 f"{BILLY_ARCHIVE_BASE}/do_it.mp3",
+      "dont_stop.mp3":             f"{BILLY_ARCHIVE_BASE}/dont_stop.mp3",
+      "hell_yeah.mp3":             f"{BILLY_ARCHIVE_BASE}/hell_yeah.mp3",
+      "wow.mp3":                   f"{BILLY_ARCHIVE_BASE}/wow.mp3",
+      "beautiful.mp3":             f"{BILLY_ARCHIVE_BASE}/beautiful.mp3",
+      "unbelievable.mp3":          f"{BILLY_ARCHIVE_BASE}/unbelievable.mp3",
+      "work_it.mp3":               f"{BILLY_ARCHIVE_BASE}/work_it.mp3",
+      "push_it.mp3":               f"{BILLY_ARCHIVE_BASE}/push_it.mp3",
+      "i_like_it.mp3":             f"{BILLY_ARCHIVE_BASE}/i_like_it.mp3",
+      "feel_the_burn.mp3":         f"{BILLY_ARCHIVE_BASE}/feel_the_burn.mp3",
 }
 
 _BILLY_REF_PATH = os.path.join(_CLIPS_DIR, "reference", "billy_ref.wav")
@@ -166,14 +162,12 @@ def _try_billy_clip(text: str) -> bool:
       """Ищет подходящий гачи-клип по тексту ответа. Два прохода: точные фразы → контекст."""
       text_lower = text.lower()
 
-      # Проход 1: точные фразы из словаря
       for phrase, filename in BILLY_CLIPS.items():
           if phrase in text_lower:
               if _play_clip(filename):
                   logger.debug(f"Клип по фразе '{phrase}': {filename}")
                   return True
 
-      # Проход 2: контекстный (regex по смыслу)
       for pattern, filename in CONTEXT_CLIPS.items():
           if re.search(pattern, text_lower, re.I):
               if _play_clip(filename):
@@ -184,28 +178,25 @@ def _try_billy_clip(text: str) -> bool:
 
 
 def _try_random_clip() -> bool:
-      """Играет случайный клип из пула (для разнообразия)."""
+      """Играет случайный клип из пула."""
       available = [f for f in RANDOM_POOL if os.path.exists(os.path.join(_CLIPS_DIR, f))]
       if not available:
           return False
       return _play_clip(random.choice(available))
 
 
-# ── XTTS-v2 — клонирование голоса Билли ──────────────────────────────────────
+# ── XTTS-v2 ──────────────────────────────────────────────────────────────────
 def _ensure_billy_reference() -> Optional[str]:
       if os.path.exists(_BILLY_REF_PATH) and os.path.getsize(_BILLY_REF_PATH) > 1000:
           return _BILLY_REF_PATH
       os.makedirs(os.path.dirname(_BILLY_REF_PATH), exist_ok=True)
 
-      # Пробуем конвертировать любой .mp3 клип в .wav для XTTS
       for clip in ["are_you_ready.mp3", "lets_go.mp3", "yeah_buddy.mp3", "come_on.mp3"]:
           src = os.path.join(_CLIPS_DIR, clip)
           if not os.path.exists(src):
               continue
           try:
               import soundfile as sf
-              import numpy as np
-              # Используем soundfile для конвертации (работает с mp3 через libsndfile)
               try:
                   data, sr = sf.read(src, dtype="float32")
                   sf.write(_BILLY_REF_PATH, data, sr)
@@ -216,22 +207,21 @@ def _ensure_billy_reference() -> Optional[str]:
           except ImportError:
               pass
 
-      # Последний вариант — скачиваем напрямую
-      import urllib.request
       wav_urls = [
           "https://ia802902.us.archive.org/1/items/billy-herrington-gachi-muchi-sounds/lets_go.mp3",
           "https://archive.org/download/gachi-sounds-pack/billy_ready.mp3",
       ]
       for url in wav_urls:
           try:
-              req = urllib.request.Request(url, headers={"User-Agent": "AnikiBuddy/3.2"})
+              req = urllib.request.Request(url, headers={"User-Agent": "AnikiBuddy/3.3"})
               with urllib.request.urlopen(req, timeout=15) as r:
                   raw = r.read()
               if len(raw) > 5000:
-                  with open(_BILLY_REF_PATH.replace(".wav", "_raw.mp3"), "wb") as f:
+                  raw_path = _BILLY_REF_PATH.replace(".wav", "_raw.mp3")
+                  with open(raw_path, "wb") as f:
                       f.write(raw)
                   logger.info("Референс-аудио Билли скачан")
-                  return _BILLY_REF_PATH.replace(".wav", "_raw.mp3")
+                  return raw_path
           except Exception as e:
               logger.debug(f"Референс-URL недоступен: {e}")
       return None
@@ -256,12 +246,12 @@ def _load_xtts():
               return _xtts_model
           except Exception as e:
               logger.debug(f"XTTS недоступен: {e}")
+              _xtts_loaded = True
               return None
 
 
 def _speak_xtts(text: str, ref_path: str) -> bool:
       try:
-          from TTS.api import TTS as CoquiTTS
           import sounddevice as sd
           import soundfile as sf
           import tempfile
@@ -277,14 +267,14 @@ def _speak_xtts(text: str, ref_path: str) -> bool:
           )
           data, sr = sf.read(tmp, dtype="float32")
           sd.play(data, sr); sd.wait()
-          import os; os.unlink(tmp)
+          os.unlink(tmp)
           return True
       except Exception as e:
           logger.debug(f"XTTS speak error: {e}")
           return False
 
 
-# ── Silero TTS (основной синтез) ──────────────────────────────────────────────
+# ── Silero TTS ────────────────────────────────────────────────────────────────
 def _load_silero():
       global _silero_model, _silero_loaded
       with _tts_lock:
@@ -310,6 +300,7 @@ def _load_silero():
               return model
           except Exception as e:
               logger.debug(f"Silero TTS недоступен: {e}")
+              _silero_loaded = True
               return None
 
 
@@ -335,7 +326,6 @@ def _speak_pyttsx3(text: str) -> bool:
       try:
           import pyttsx3
           engine = pyttsx3.init()
-          # Попробуем выбрать мужской голос
           voices = engine.getProperty("voices")
           for v in voices:
               if any(k in v.name.lower() for k in ["male", "david", "mark"]):
@@ -359,22 +349,18 @@ def speak(text: str, use_clips: bool = True) -> bool:
       if not text or not text.strip():
           return False
 
-      # 1. Гачи-клип по смыслу текста
       if use_clips and _try_billy_clip(text):
           return True
 
-      # 2. XTTS с голосом Билли (если доступен)
       loaded = _load_xtts()
       if loaded:
           model, ref = loaded
           if _speak_xtts(text, ref):
               return True
 
-      # 3. Silero TTS
       if _speak_silero(text):
           return True
 
-      # 4. pyttsx3 системный
       return _speak_pyttsx3(text)
 
 
@@ -392,6 +378,64 @@ def get_tts_backend() -> str:
           import torch; _load_silero(); return "silero" if _silero_loaded else "pyttsx3"
       except Exception:
           return "pyttsx3"
+
+
+def preload() -> None:
+      """
+      [FIX C1] Предзагрузка TTS в фоновом потоке.
+      Вызывается из main.py: threading.Thread(target=preload, daemon=True).start()
+      Прогревает: проверка клипов → Silero → XTTS (если доступен).
+      """
+      try:
+          os.makedirs(_CLIPS_DIR, exist_ok=True)
+          clips_found = sum(
+              1 for f in set(BILLY_CLIPS.values())
+              if os.path.exists(os.path.join(_CLIPS_DIR, f))
+          )
+          logger.info(f"TTS preload: найдено {clips_found} гачи-клипов")
+
+          _load_silero()
+
+          logger.info(f"TTS preload завершён. Бэкенд: {get_tts_backend()}")
+      except Exception as e:
+          logger.debug(f"TTS preload ошибка: {e}")
+
+
+def download_all_clips(silent: bool = False) -> dict:
+      """
+      [FIX C2] Скачивает все гачи-клипы Билли с Archive.org.
+      Вызывается из auto_setup.py → download_billy_voice().
+      Возвращает {'ok': [...], 'fail': [...]}.
+      """
+      os.makedirs(_CLIPS_DIR, exist_ok=True)
+      ok, fail = [], []
+
+      for filename, url in BILLY_CLIPS_DOWNLOAD.items():
+          dest = os.path.join(_CLIPS_DIR, filename)
+          if os.path.exists(dest) and os.path.getsize(dest) > 1000:
+              if not silent:
+                  logger.debug(f"Клип уже есть: {filename}")
+              ok.append(filename)
+              continue
+          try:
+              req = urllib.request.Request(url, headers={"User-Agent": "AnikiBuddy/3.3"})
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  data = r.read()
+              if len(data) < 1000:
+                  raise ValueError(f"Слишком маленький файл: {len(data)} байт")
+              with open(dest, "wb") as f:
+                  f.write(data)
+              ok.append(filename)
+              if not silent:
+                  logger.info(f"Скачан клип: {filename} ({len(data)//1024} KB)")
+              time.sleep(0.3)
+          except Exception as e:
+              fail.append(filename)
+              if not silent:
+                  logger.debug(f"Не удалось скачать {filename}: {e}")
+
+      logger.info(f"download_all_clips: {len(ok)} OK, {len(fail)} FAIL")
+      return {"ok": ok, "fail": fail}
 
 
 class StreamTTS:
