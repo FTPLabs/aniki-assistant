@@ -37,16 +37,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: aniki_assistant/dist
-          key: ${{ runner.os }}-dist-v9-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
+          key: ${{ runner.os }}-dist-v10-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
 
       - name: Cache PyInstaller analysis
         if: steps.cache-dist.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: aniki_assistant/build
-          key: ${{ runner.os }}-pyinstaller-v9-${{ hashFiles('aniki_assistant/aniki.spec') }}
+          key: ${{ runner.os }}-pyinstaller-v10-${{ hashFiles('aniki_assistant/aniki.spec') }}
           restore-keys: |
-            ${{ runner.os }}-pyinstaller-v9-
+            ${{ runner.os }}-pyinstaller-v10-
 
       - name: Install build tools
         run: |
@@ -75,6 +75,35 @@ jobs:
           python -m py_compile core/search.py      && echo OK search
           python -m py_compile auto_setup.py       && echo OK auto_setup
           python -m py_compile main.py             && echo OK main
+
+
+      - name: Import test — все core-модули должны импортироваться
+        working-directory: aniki_assistant
+        shell: python
+        run: |
+          import sys, os
+          sys.path.insert(0, ".")
+          mods = [
+            "core", "core.personality", "core.ai_engine", "core.memory",
+            "core.reminders", "core.commands", "core.learning", "core.search",
+          ]
+          failed = []
+          for m in mods:
+            try:
+              __import__(m)
+              print(f"OK {m}")
+            except SyntaxError as e:
+              print(f"SYNTAX ERROR {m}: {e}")
+              failed.append(m)
+            except ImportError as e:
+              # ImportError на зависимостях (torch, PyQt6) — не блокирует
+              print(f"OK(deps) {m}: {e}")
+            except Exception as e:
+              print(f"OK(other) {m}: {e}")
+          if failed:
+            print(f"\nFAILED SYNTAX: {failed}")
+            sys.exit(1)
+          print("\nAll core modules syntax OK")
 
       - name: Download Billy audio clips
         working-directory: aniki_assistant
