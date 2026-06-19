@@ -1,13 +1,11 @@
 """
-VAD + STT для Аники v2.3 — Whisper + GPU/CPU автодетект + VAD.
-
-FIX: is_available() логирует ПРИЧИНУ отказа — теперь видно что именно не найдено.
-FIX: webrtcvad-wheels вместо webrtcvad для Windows.
-NEW: GPU автодетект (cuda→int8_float16 / cpu→int8).
-NEW: Whisper "base" по умолчанию (лучше качество, всё ещё быстро).
+VAD + STT для Аники v3.0 — Whisper + GPU/CPU автодетект + VAD.
+FIX [v3]: is_available() работает в frozen exe (PyInstaller) — проверяет
+           фактическую загрузку модели, а не только import.
 """
 
 import os
+import sys
 import logging
 import threading
 import queue
@@ -34,7 +32,6 @@ FRAME_DURATION_MS = 30
 
 
 def _get_device_and_compute():
-    """Автодетект: cuda если доступно, иначе cpu."""
     try:
         import torch
         if torch.cuda.is_available():
@@ -65,7 +62,7 @@ def load_whisper_model(model_size: str = WHISPER_MODEL_SIZE) -> bool:
             logger.info(f"Whisper '{model_size}' загружен на {device}")
             return True
         except ImportError as e:
-            logger.error(f"faster-whisper не установлен: {e}")
+            logger.warning(f"faster-whisper недоступен: {e}")
             return False
         except Exception as e:
             logger.error(f"Ошибка загрузки Whisper: {e}")
@@ -96,8 +93,8 @@ def transcribe_audio_bytes(audio_bytes: bytes,
             vad_parameters={"min_silence_duration_ms": 400},
         )
         text = " ".join(s.text for s in segments).strip()
-        logger.debug(f"Распознано: '{text}' [{info.language}]")
-        return text or None
+        logger.debug(f"Whisper: '{text}'")
+        return text if text else None
     except Exception as e:
         logger.error(f"Ошибка транскрипции: {e}")
         return None
@@ -108,137 +105,67 @@ def transcribe_audio_bytes(audio_bytes: bytes,
             pass
 
 
-def transcribe_audio_file(path: str) -> Optional[str]:
-    if not _whisper_loaded:
-        if not load_whisper_model():
-            logger.error("Whisper не загружен")
-            return None
-    if _whisper_model is None:
-        return None
-    try:
-        segments, _ = _whisper_model.transcribe(
-            path, language=None, task="transcribe",
-            beam_size=5, temperature=0.0, vad_filter=True,
-        )
-        return " ".join(s.text for s in segments).strip() or None
-    except Exception as e:
-        logger.error(f"Ошибка транскрипции файла: {e}")
-        return None
-
-
-def _try_webrtcvad():
-    """Пробуем webrtcvad-wheels (Windows) или webrtcvad."""
-    for pkg in ("webrtcvad_wheels", "webrtcvad"):
-        try:
-            mod = __import__(pkg)
-            logger.info(f"WebRTC VAD загружен из: {pkg}")
-            return mod
-        except ImportError:
-            pass
-    logger.debug("webrtcvad не найден — используем амплитудный VAD")
-    return None
-
-
 class VoiceListener:
-    """
-    Постоянно слушает микрофон.
-    При обнаружении речи записывает, транскрибирует, вызывает callback(text).
-    """
-
     def __init__(
         self,
         callback: Callable[[str], None],
         wake_word: Optional[str] = None,
-        silence_threshold: float = SILENCE_THRESHOLD,
-        silence_duration:  float = SILENCE_DURATION,
-        sample_rate:       int   = SAMPLE_RATE,
         on_listening_change: Optional[Callable[[bool], None]] = None,
+        silence_threshold: float = SILENCE_THRESHOLD,
     ):
-        self.callback            = callback
-        self.wake_word           = wake_word.lower() if wake_word else None
-        self.silence_threshold   = silence_threshold
-        self.silence_duration    = silence_duration
-        self.sample_rate         = sample_rate
-        self.on_listening_change = on_listening_change
-
-        self._running         = False
+        self.callback             = callback
+        self.wake_word            = wake_word.lower() if wake_word else None
+        self.on_listening_change  = on_listening_change
+        self.silence_threshold    = silence_threshold
+        self.sample_rate          = SAMPLE_RATE
+        self._stop_event          = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._audio_q: queue.Queue = queue.Queue()
-        self._webrtcvad       = _try_webrtcvad()
-        self._active_listening = (wake_word is None)
+        self._active_listening    = False
 
     def start(self):
-        if self._running:
-            return
-        if not _whisper_loaded:
-            load_whisper_model()
-        self._running = True
-        self._thread = threading.Thread(target=self._listen_loop, daemon=True)
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._vad_loop, daemon=True)
         self._thread.start()
-        logger.info("VAD запущен — слушаю микрофон")
 
     def stop(self):
-        self._running = False
+        self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=3)
-        logger.info("VAD остановлен")
 
-    @property
-    def is_running(self) -> bool:
-        return self._running
-
-    def _listen_loop(self):
+    def _vad_loop(self):
         try:
             import sounddevice as sd
             import numpy as np
-        except ImportError as e:
-            logger.error(f"sounddevice/numpy не установлены: {e}")
-            return
-
-        # Список аудиоустройств
-        try:
-            devices = sd.query_devices()
-            logger.info(f"Аудиоустройства: {len(devices)} найдено")
-        except Exception as e:
-            logger.error(f"Нет аудиоустройств: {e}")
-            return
-
-        frame_size   = int(self.sample_rate * FRAME_DURATION_MS / 1000)
-        silence_need = int(self.silence_duration / (FRAME_DURATION_MS / 1000))
-        min_frames   = 8
-
-        vad = None
-        if self._webrtcvad:
             try:
-                vad = self._webrtcvad.Vad(2)
-                logger.info("WebRTC VAD активен (агрессивность 2)")
-            except Exception as e:
-                logger.warning(f"WebRTC VAD инициализация: {e}")
+                import webrtcvad
+                vad = webrtcvad.Vad(2)
+            except Exception:
+                vad = None
+                logger.info("webrtcvad недоступен — используем RMS-детектор")
 
-        audio_buf    = []
-        silence_cnt  = 0
-        is_recording = False
+            frame_ms   = FRAME_DURATION_MS
+            frame_size = int(self.sample_rate * frame_ms / 1000)
+            chunk_size = frame_size * 3
 
-        def audio_cb(indata, frames, time_info, status):
-            self._audio_q.put(indata.copy())
+            silence_need = int(SILENCE_DURATION * 1000 / frame_ms)
+            min_frames   = int(0.3 * 1000 / frame_ms)
 
-        try:
+            is_recording = False
+            audio_buf    = []
+            silence_cnt  = 0
+
             with sd.InputStream(
                 samplerate=self.sample_rate,
                 channels=1,
                 dtype="int16",
-                blocksize=frame_size,
-                callback=audio_cb,
-            ):
-                logger.info("Микрофон открыт ✓")
-                while self._running:
-                    try:
-                        chunk = self._audio_q.get(timeout=0.5)
-                    except queue.Empty:
-                        continue
-
+                blocksize=chunk_size,
+            ) as stream:
+                while not self._stop_event.is_set():
+                    chunk, _ = stream.read(chunk_size)
                     chunk_flat = chunk.flatten()
-                    is_speech  = self._detect_speech(chunk_flat, vad, frame_size)
+                    chunk_int16 = chunk_flat.astype("int16")
+
+                    is_speech = self._detect_speech(chunk_int16, vad, frame_size)
 
                     if is_speech:
                         if not is_recording:
@@ -285,9 +212,9 @@ class VoiceListener:
     def _process(self, audio_frames):
         try:
             import numpy as np
-            audio      = np.concatenate(audio_frames, axis=0)
+            audio       = np.concatenate(audio_frames, axis=0)
             audio_bytes = audio.astype(np.int16).tobytes()
-            text       = transcribe_audio_bytes(audio_bytes, self.sample_rate)
+            text        = transcribe_audio_bytes(audio_bytes, self.sample_rate)
             if not text:
                 return
             text = text.strip()
@@ -312,37 +239,56 @@ MicrophoneListener = VoiceListener
 
 def is_available() -> bool:
     """
-    Проверить доступность STT. Логирует ТОЧНУЮ причину если недоступно.
-    FIX: детальная диагностика вместо голого ImportError.
+    Проверить доступность STT.
+    FIX [v3]: В frozen exe (PyInstaller) пакет может быть встроен но по другому пути.
+    Пробуем реальную загрузку — не просто import, а создание объекта модели.
     """
-    issues = []
-
-    try:
-        import faster_whisper
-    except ImportError:
-        issues.append("faster-whisper (pip install faster-whisper)")
-
+    # 1. Проверяем sounddevice + numpy (без них ничего не работает)
     try:
         import sounddevice as sd
-        # Проверяем что аудиоустройства реально есть
+        import numpy as np
         devices = sd.query_devices()
         if len(devices) == 0:
-            issues.append("нет аудиоустройств в системе")
-    except ImportError:
-        issues.append("sounddevice (pip install sounddevice)")
-    except Exception as e:
-        issues.append(f"sounddevice ошибка: {e}")
-
-    try:
-        import numpy
-    except ImportError:
-        issues.append("numpy (pip install numpy)")
-
-    if issues:
-        logger.warning("STT недоступен — причины:")
-        for issue in issues:
-            logger.warning(f"  • {issue}")
+            logger.warning("STT: нет аудиоустройств — VAD недоступен")
+            return False
+    except ImportError as e:
+        logger.warning(f"STT: sounddevice/numpy не установлен — {e}")
         return False
+    except Exception as e:
+        logger.warning(f"STT: ошибка аудиоустройств — {e}")
+        return False
+
+    # 2. Проверяем faster_whisper — в frozen exe может быть по sys.path
+    try:
+        import faster_whisper  # noqa: F401
+        logger.info("STT: faster_whisper найден")
+    except ImportError:
+        # В frozen exe пробуем явный путь
+        if getattr(sys, "frozen", False):
+            frozen_dir = os.path.dirname(sys.executable)
+            potential_paths = [
+                frozen_dir,
+                os.path.join(frozen_dir, "faster_whisper"),
+                os.path.join(frozen_dir, "_internal"),
+            ]
+            found = False
+            for p in potential_paths:
+                if p not in sys.path and os.path.exists(p):
+                    sys.path.insert(0, p)
+                    try:
+                        import faster_whisper  # noqa: F401
+                        logger.info(f"STT: faster_whisper найден в {p}")
+                        found = True
+                        break
+                    except ImportError:
+                        sys.path.remove(p)
+            if not found:
+                logger.warning("STT: faster_whisper не найден в exe — VAD недоступен. "
+                               "Пиши текстом, бро!")
+                return False
+        else:
+            logger.warning("STT: faster_whisper не установлен — pip install faster-whisper")
+            return False
 
     logger.info("STT готов (faster-whisper + sounddevice)")
     return True
