@@ -1,31 +1,31 @@
 """
-  TTS Аники v3.2 — голос Билли Херрингтона + 30+ гачи-клипов.
-  Логика: сначала ищем подходящий клип по смыслу ответа,
-  если не нашли — XTTS с голосом Билли, fallback Silero/pyttsx3.
-  """
+TTS Аники v3.2 — голос Билли Херрингтона + 30+ гачи-клипов.
+Логика: сначала ищем подходящий клип по смыслу ответа,
+если не нашли — XTTS с голосом Билли, fallback Silero/pyttsx3.
+"""
 
-  import os, logging, threading, queue, re, random
-  from typing import Optional, Callable
+import os, logging, threading, queue, re, random
+from typing import Optional, Callable
 
-  logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-  _tts_lock      = threading.Lock()
-  _silero_model  = None
-  _silero_loaded = False
-  _xtts_model    = None
-  _xtts_loaded   = False
-  _sample_rate   = 24000
+_tts_lock      = threading.Lock()
+_silero_model  = None
+_silero_loaded = False
+_xtts_model    = None
+_xtts_loaded   = False
+_sample_rate   = 24000
 
-  SILERO_SPEAKER  = "aidar"
-  SILERO_LANG     = "ru"
-  SILERO_MODEL_ID = "v4_ru"
+SILERO_SPEAKER  = "aidar"
+SILERO_LANG     = "ru"
+SILERO_MODEL_ID = "v4_ru"
 
-  _CLIPS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "voice")
+_CLIPS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "voice")
 
-  # ── Полная библиотека гачи-клипов Билли ──────────────────────────────────────
-  # Формат: "ключевое слово/фраза" → "файл.mp3"
-  # Ключи — на английском (Билли говорил по-английски), русские — для контекста
-  BILLY_CLIPS = {
+# ── Полная библиотека гачи-клипов Билли ──────────────────────────────────────
+# Формат: "ключевое слово/фраза" → "файл.mp3"
+# Ключи — на английском (Билли говорил по-английски), русские — для контекста
+BILLY_CLIPS = {
       # Приветствие / готовность
       "are you ready":         "are_you_ready.mp3",
       "let's go":              "lets_go.mp3",
@@ -86,10 +86,10 @@
       "ошибка":                "oh_my_god.mp3",
       "проблема":              "oh_my_god.mp3",
       "невероятно":            "incredible.mp3",
-  }
+}
 
-  # Контекстный маппинг: если в ответе есть смысловой блок → играем клип
-  CONTEXT_CLIPS = {
+# Контекстный маппинг: если в ответе есть смысловой блок → играем клип
+CONTEXT_CLIPS = {
       r"(готов|сделал|выполн|закончил|успешно|работает)": "yeah_buddy.mp3",
       r"(ошибка|упало|сломал|не работает|проблема|баг)":   "oh_my_god.mp3",
       r"(привет|здравств|добро пожаловать)":               "are_you_ready.mp3",
@@ -97,15 +97,15 @@
       r"(отлично|молодец|хорошо|правильно)":               "good_job.mp3",
       r"(невероятно|удивительно|вот это да)":              "incredible.mp3",
       r"(подожди|секунд|минут|думаю)":                     "take_it_easy.mp3",
-  }
+}
 
-  # Клипы для случайного использования (разнообразие)
-  RANDOM_POOL = ["come_on.mp3", "lets_go.mp3", "yeah_buddy.mp3", "nice.mp3", "thats_right.mp3"]
+# Клипы для случайного использования (разнообразие)
+RANDOM_POOL = ["come_on.mp3", "lets_go.mp3", "yeah_buddy.mp3", "nice.mp3", "thats_right.mp3"]
 
-  # ── Скачивание клипов с Archive.org ──────────────────────────────────────────
-  # Коллекция: https://archive.org/details/billy-herrington-voice-pack
-  BILLY_ARCHIVE_BASE = "https://archive.org/download/billy-herrington-voice-pack"
-  BILLY_CLIPS_DOWNLOAD = {
+# ── Скачивание клипов с Archive.org ──────────────────────────────────────────
+# Коллекция: https://archive.org/details/billy-herrington-voice-pack
+BILLY_ARCHIVE_BASE = "https://archive.org/download/billy-herrington-voice-pack"
+BILLY_CLIPS_DOWNLOAD = {
       "are_you_ready.mp3":        f"{BILLY_ARCHIVE_BASE}/are_you_ready.mp3",
       "lets_go.mp3":              f"{BILLY_ARCHIVE_BASE}/lets_go.mp3",
       "no_pain_no_gain.mp3":      f"{BILLY_ARCHIVE_BASE}/no_pain_no_gain.mp3",
@@ -133,12 +133,12 @@
       "i_like_it.mp3":            f"{BILLY_ARCHIVE_BASE}/i_like_it.mp3",
       "feel_the_burn.mp3":        f"{BILLY_ARCHIVE_BASE}/feel_the_burn.mp3",
       "oh_yeah.mp3":              f"{BILLY_ARCHIVE_BASE}/oh_yeah.mp3",
-  }
+}
 
-  _BILLY_REF_PATH = os.path.join(_CLIPS_DIR, "reference", "billy_ref.wav")
+_BILLY_REF_PATH = os.path.join(_CLIPS_DIR, "reference", "billy_ref.wav")
 
 
-  def _play_clip(filename: str) -> bool:
+def _play_clip(filename: str) -> bool:
       path = os.path.join(_CLIPS_DIR, filename)
       if not os.path.exists(path):
           return False
@@ -162,7 +162,7 @@
               return False
 
 
-  def _try_billy_clip(text: str) -> bool:
+def _try_billy_clip(text: str) -> bool:
       """Ищет подходящий гачи-клип по тексту ответа. Два прохода: точные фразы → контекст."""
       text_lower = text.lower()
 
@@ -183,7 +183,7 @@
       return False
 
 
-  def _try_random_clip() -> bool:
+def _try_random_clip() -> bool:
       """Играет случайный клип из пула (для разнообразия)."""
       available = [f for f in RANDOM_POOL if os.path.exists(os.path.join(_CLIPS_DIR, f))]
       if not available:
@@ -191,8 +191,8 @@
       return _play_clip(random.choice(available))
 
 
-  # ── XTTS-v2 — клонирование голоса Билли ──────────────────────────────────────
-  def _ensure_billy_reference() -> Optional[str]:
+# ── XTTS-v2 — клонирование голоса Билли ──────────────────────────────────────
+def _ensure_billy_reference() -> Optional[str]:
       if os.path.exists(_BILLY_REF_PATH) and os.path.getsize(_BILLY_REF_PATH) > 1000:
           return _BILLY_REF_PATH
       os.makedirs(os.path.dirname(_BILLY_REF_PATH), exist_ok=True)
@@ -237,7 +237,7 @@
       return None
 
 
-  def _load_xtts():
+def _load_xtts():
       global _xtts_model, _xtts_loaded
       with _tts_lock:
           if _xtts_loaded:
@@ -259,7 +259,7 @@
               return None
 
 
-  def _speak_xtts(text: str, ref_path: str) -> bool:
+def _speak_xtts(text: str, ref_path: str) -> bool:
       try:
           from TTS.api import TTS as CoquiTTS
           import sounddevice as sd
@@ -284,8 +284,8 @@
           return False
 
 
-  # ── Silero TTS (основной синтез) ──────────────────────────────────────────────
-  def _load_silero():
+# ── Silero TTS (основной синтез) ──────────────────────────────────────────────
+def _load_silero():
       global _silero_model, _silero_loaded
       with _tts_lock:
           if _silero_loaded:
@@ -313,7 +313,7 @@
               return None
 
 
-  def _speak_silero(text: str) -> bool:
+def _speak_silero(text: str) -> bool:
       model = _load_silero()
       if not model:
           return False
@@ -331,7 +331,7 @@
           return False
 
 
-  def _speak_pyttsx3(text: str) -> bool:
+def _speak_pyttsx3(text: str) -> bool:
       try:
           import pyttsx3
           engine = pyttsx3.init()
@@ -350,8 +350,8 @@
           return False
 
 
-  # ── Публичный API ─────────────────────────────────────────────────────────────
-  def speak(text: str, use_clips: bool = True) -> bool:
+# ── Публичный API ─────────────────────────────────────────────────────────────
+def speak(text: str, use_clips: bool = True) -> bool:
       """
       Воспроизводит текст.
       Приоритет: гачи-клип → XTTS (голос Билли) → Silero → pyttsx3.
@@ -378,7 +378,7 @@
       return _speak_pyttsx3(text)
 
 
-  def get_tts_backend() -> str:
+def get_tts_backend() -> str:
       if os.path.exists(_BILLY_REF_PATH):
           try:
               from TTS.api import TTS
@@ -394,7 +394,7 @@
           return "pyttsx3"
 
 
-  class StreamTTS:
+class StreamTTS:
       """Потоковый TTS для стриминга токенов от ИИ."""
       def __init__(self, use_clips: bool = True):
           self._q: queue.Queue = queue.Queue()
@@ -435,4 +435,3 @@
                   if buf.strip():
                       speak(buf.strip(), use_clips=self.use_clips)
                       buf = ""
-  

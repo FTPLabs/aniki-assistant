@@ -1,34 +1,34 @@
 """
-  VAD + STT для Аники v3.2 — Whisper + silero-vad (мгновенный старт, ML-точность).
-  silero-vad: чистый PyTorch, нет C++ зависимостей, работает из коробки.
-  Fallback: webrtcvad → RMS-детектор.
-  """
+VAD + STT для Аники v3.2 — Whisper + silero-vad (мгновенный старт, ML-точность).
+silero-vad: чистый PyTorch, нет C++ зависимостей, работает из коробки.
+Fallback: webrtcvad → RMS-детектор.
+"""
 
-  import os, sys, logging, threading, queue, time, wave, tempfile
-  from typing import Optional, Callable
+import os, sys, logging, threading, queue, time, wave, tempfile
+from typing import Optional, Callable
 
-  logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-  _whisper_model  = None
-  _whisper_loaded = False
-  _whisper_lock   = threading.Lock()
+_whisper_model  = None
+_whisper_loaded = False
+_whisper_lock   = threading.Lock()
 
-  _silero_vad_model = None
-  _silero_vad_utils = None
-  _silero_vad_lock  = threading.Lock()
+_silero_vad_model = None
+_silero_vad_utils = None
+_silero_vad_lock  = threading.Lock()
 
-  WHISPER_MODEL_SIZE = os.environ.get("ANIKI_WHISPER_MODEL", "base")
-  WHISPER_MODELS_DIR = os.path.join(
+WHISPER_MODEL_SIZE = os.environ.get("ANIKI_WHISPER_MODEL", "base")
+WHISPER_MODELS_DIR = os.path.join(
       os.path.dirname(os.path.dirname(__file__)), "data", "models", "whisper"
-  )
+)
 
-  SILENCE_THRESHOLD = 0.005
-  SILENCE_DURATION  = 0.8   # секунды тишины до конца фразы
-  SAMPLE_RATE       = 16000
-  FRAME_MS          = 32    # silero-vad требует 32ms @ 16kHz
+SILENCE_THRESHOLD = 0.005
+SILENCE_DURATION  = 0.8   # секунды тишины до конца фразы
+SAMPLE_RATE       = 16000
+FRAME_MS          = 32    # silero-vad требует 32ms @ 16kHz
 
 
-  def _get_device_and_compute():
+def _get_device_and_compute():
       try:
           import torch
           if torch.cuda.is_available():
@@ -38,7 +38,7 @@
       return "cpu", "int8"
 
 
-  def _load_silero_vad():
+def _load_silero_vad():
       """Загружает silero-vad из torch.hub (кэшируется автоматически)."""
       global _silero_vad_model, _silero_vad_utils
       with _silero_vad_lock:
@@ -65,7 +65,7 @@
               return None, None
 
 
-  def load_whisper_model(model_size: str = WHISPER_MODEL_SIZE) -> bool:
+def load_whisper_model(model_size: str = WHISPER_MODEL_SIZE) -> bool:
       global _whisper_model, _whisper_loaded
       with _whisper_lock:
           if _whisper_loaded:
@@ -87,7 +87,7 @@
               return False
 
 
-  def transcribe_audio_bytes(audio_bytes: bytes, sample_rate: int = SAMPLE_RATE) -> Optional[str]:
+def transcribe_audio_bytes(audio_bytes: bytes, sample_rate: int = SAMPLE_RATE) -> Optional[str]:
       if not _whisper_loaded:
           if not load_whisper_model():
               return None
@@ -113,7 +113,7 @@
           except: pass
 
 
-  class VoiceListener:
+class VoiceListener:
       def __init__(
           self,
           callback: Callable[[str], None],
@@ -268,10 +268,10 @@
               logger.error(f"Ошибка обработки аудио: {e}")
 
 
-  MicrophoneListener = VoiceListener
+MicrophoneListener = VoiceListener
 
 
-  def is_available() -> bool:
+def is_available() -> bool:
       try:
           import sounddevice as sd
           import numpy as np
@@ -290,4 +290,3 @@
       except Exception:
           pass
       return True  # RMS fallback всегда работает
-  

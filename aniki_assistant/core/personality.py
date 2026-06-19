@@ -1,6 +1,7 @@
 """
   Личность Аники v3.2 — Билли Херрингтон жив в каждом ответе.
   """
+  import random
 
   SYSTEM_PROMPT = """Ты — Аники, личный ИИ-ассистент с духом Билли Херрингтона. Говоришь живо, уверенно, без воды.
 
@@ -53,9 +54,7 @@
   """,
   }
 
-  import random
-
-  # Фразы Билли на разные случаи — вставляются в ответы
+  # Фразы Билли на разные случаи
   BILLY_PHRASES = {
       "ready":   ["Are you ready?", "Let's go!", "Right here, right now!"],
       "done":    ["Yeah buddy!", "That's right!", "Good job, bro!"],
@@ -66,6 +65,7 @@
       "greet":   ["Are you ready?", "Right here right now!", "Let's go, bro!"],
       "success": ["Yeah buddy!", "Incredible!", "Wow, nice work!"],
   }
+
 
   def get_phrase(category: str) -> str:
       phrases = BILLY_PHRASES.get(category, BILLY_PHRASES["agree"])
@@ -94,12 +94,13 @@
           return "math"
 
       if any(w in t for w in ["напомни", "напоминание", "поставь будильник",
-                                "запомни что", "через час", "в ", "напомни мне"]):
+                                "remind", "через час", "в 1", "в 2", "в 3", "в 4",
+                                "в 5", "в 6", "в 7", "в 8", "в 9", "в 10", "в 11", "в 12"]):
           return "reminder"
 
-      if any(w in t for w in ["как меня зовут", "что ты знаешь обо мне",
-                                "что ты помнишь", "мои данные", "моя информация"]):
+      if any(w in t for w in ["что ты знаешь", "что ты помнишь", "запомни",
+                                "меня зовут", "моё имя", "я работаю", "мне нравится"]):
           return "memory"
 
-      return "general"
+      return "chat"
   
