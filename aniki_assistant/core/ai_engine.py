@@ -213,9 +213,9 @@ _AGENT_OPTIONS = {
     "search":     {"temperature": 0.6,  "num_predict": 256, "top_p": 0.9},
     "memory":     {"temperature": 0.5,  "num_predict": 128, "top_p": 0.9},
     "creative":   {"temperature": 0.9,  "num_predict": 512, "top_p": 0.95},
-    "knowledge":  {"temperature": 0.65, "num_predict": 300, "top_p": 0.9},
-    "chat":       {"temperature": 0.8,  "num_predict": 150, "top_p": 0.92},
-    "motivation": {"temperature": 0.85, "num_predict": 150, "top_p": 0.92},
+    "knowledge":  {"temperature": 0.65, "num_predict": 200, "top_p": 0.9},
+    "chat":       {"temperature": 0.75, "num_predict": 80,  "top_p": 0.92},
+    "motivation": {"temperature": 0.85, "num_predict": 80,  "top_p": 0.92},
 }
 
 
