@@ -1,7 +1,10 @@
 """
-Аники v2.2 — точка входа.
-FIX: авто-установка зависимостей, нормальное закрытие (крест = выход).
+Аники v2.3 — точка входа.
+FIX: multiprocessing.freeze_support() — без этого PyInstaller на Windows
+     порождает бесконечные дочерние процессы (torch использует multiprocessing).
 """
+import multiprocessing
+multiprocessing.freeze_support()   # ← ДОЛЖЕН быть ДО любого другого импорта
 
 import sys
 import os
@@ -25,14 +28,23 @@ os.makedirs(os.path.join(os.path.dirname(__file__), "data"), exist_ok=True)
 
 def main():
     # ── Шаг 1: авто-установка зависимостей ───────────────────────────────────
-    try:
-        import auto_setup
-        auto_setup.run(progress_cb=lambda msg: print(f"  {msg}"))
-        auto_setup.ensure_ollama_autostart()
-        # Скачать голос Билли в фоне (не блокирует запуск)
-        auto_setup.download_billy_voice(background=True)
-    except Exception as e:
-        print(f"auto_setup: {e}")
+    # В frozen exe (PyInstaller) пропускаем — пакеты уже встроены
+    if not getattr(sys, 'frozen', False):
+        try:
+            import auto_setup
+            auto_setup.run(progress_cb=lambda msg: print(f"  {msg}"))
+            auto_setup.ensure_ollama_autostart()
+            auto_setup.download_billy_voice(background=True)
+        except Exception as e:
+            print(f"auto_setup: {e}")
+    else:
+        # В exe: только проверяем автозапуск ollama (без pip)
+        try:
+            import auto_setup
+            auto_setup.ensure_ollama_autostart()
+            auto_setup.download_billy_voice(background=True)
+        except Exception as e:
+            logger.debug(f"auto_setup (frozen): {e}")
 
     # ── Шаг 2: проверить PyQt6 ────────────────────────────────────────────────
     try:
@@ -54,7 +66,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Аники")
-    app.setApplicationVersion("2.2.0")
+    app.setApplicationVersion("2.3.0")
 
     # Сплэш
     pix = QPixmap(440, 230)
@@ -64,7 +76,7 @@ def main():
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setGeometry(0, 0, 440, 230)
     lbl.setStyleSheet("color:#ff9e44;font-size:24px;font-weight:bold;font-family:'Segoe UI';")
-    lbl.setText("АНИКИ v2.2\nAre you ready?\nЗагружаюсь...")
+    lbl.setText("АНИКИ v2.3\nAre you ready?\nЗагружаюсь...")
     splash.show()
     app.processEvents()
 
@@ -76,7 +88,7 @@ def main():
         )
         app.processEvents()
 
-    logger.info("Аники v2.2 запускается...")
+    logger.info("Аники v2.3 запускается...")
 
     splash_msg("Инициализация памяти...")
     from core.memory import init_db
@@ -87,7 +99,6 @@ def main():
     ai_engine = AnikiAI()
     ollama_ok = check_ollama_available()
     if not ollama_ok:
-        # Пробуем автозапуск
         try:
             from ollama_setup import start_ollama
             splash_msg("Запускаю Ollama...")
@@ -132,7 +143,6 @@ def main():
         stt_enabled=stt_available,
     )
 
-    # Аватар Билли
     splash_msg("Запуск аватара Билли...")
     avatar_overlay = None
     try:
@@ -156,7 +166,6 @@ def main():
     except Exception as e:
         logger.warning(f"Аватар недоступен: {e}")
 
-    # Трей
     from ui.tray import TrayApp
     tray_app = TrayApp(chat_window=chat_window)
 
@@ -164,15 +173,9 @@ def main():
     if not QSystemTrayIcon.isSystemTrayAvailable():
         logger.warning("Системный трей недоступен")
 
-    # FIX: крест ЗАКРЫВАЕТ приложение (не сворачивает)
-    # Пользователь может выбрать поведение в настройках
-    app.setQuitOnLastWindowClosed(False)   # управляем вручную
+    app.setQuitOnLastWindowClosed(False)
 
     def closeEvent(event):
-        """
-        FIX: спрашиваем что делать при закрытии.
-        Можно убрать диалог и всегда выходить — раскомментируй второй вариант.
-        """
         from PyQt6.QtWidgets import QMessageBox
         reply = QMessageBox.question(
             chat_window,
@@ -180,14 +183,12 @@ def main():
             "Свернуть в трей или выйти?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
         )
-        # Yes = Свернуть, No = Выйти, Cancel = Отмена
         if reply == QMessageBox.StandardButton.Yes:
             event.ignore()
             chat_window.hide()
             tray_app.show_notification("Аники", "Я в трее! Кликни на аватар Билли.")
         elif reply == QMessageBox.StandardButton.No:
             event.accept()
-            # Полный выход
             if avatar_overlay:
                 avatar_overlay.close()
             tray_app.quit()
@@ -211,7 +212,7 @@ def main():
             "Голосовое управление отключено — пиши текстом."
         ))
 
-    logger.info("Аники v2.2 запущен! Are you ready?")
+    logger.info("Аники v2.3 запущен! Are you ready?")
     sys.exit(tray_app.run())
 
 
