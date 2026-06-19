@@ -251,6 +251,7 @@ class ChatWindow(QWidget):
         self.tts_enabled     = tts_enabled
         self.stt_enabled     = stt_enabled
         self._mic_active     = False
+        self._voice_listener = None
         self._current_bubble : Optional[MessageBubble] = None
         self._ai_thread: Optional[QThread] = None
 
@@ -533,13 +534,27 @@ class ChatWindow(QWidget):
             self._ai_thread.wait()
 
     # ── Микрофон ──────────────────────────────────────────────────────────────
+    def set_voice_listener(self, listener):
+        self._voice_listener = listener
+
     def _toggle_mic(self, on: bool):
         self._mic_active = on
         self.avatar_listening.emit(on)
         if on:
             self._status_bar.set_status("Слушаю...", "#c060ff", blink=True)
+            if self._voice_listener:
+                try:
+                    self._voice_listener.start()
+                except Exception as e:
+                    logger.error(f"Ошибка микрофона: {e}")
+                    self._btn_mic.setChecked(False)
         else:
             self._status_bar.set_status("Онлайн", "#50e690")
+            if self._voice_listener:
+                try:
+                    self._voice_listener.stop()
+                except Exception:
+                    pass
 
     def on_voice_input(self, text: str):
         if text.strip():
