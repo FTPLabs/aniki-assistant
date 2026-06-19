@@ -88,10 +88,10 @@ jobs:
           }
           if (-not $found) { Write-Error "Aniki.exe not found!"; exit 1 }
 
-      # Smoke test: запуск EXE на 5 сек.
-      # - Краш сразу (exit != 0) = missing DLL / ошибка импорта / падение при старте.
-      # - Всё ещё работает = GUI OK.
-      # - Первые строки stdout/stderr всегда печатаются в лог для диагностики.
+      # Smoke test: запуск EXE на 5 сек с захватом вывода в файлы.
+      # stdout/stderr редиректим в tmp-файлы (нет проблем с PowerShell Runspace).
+      # Краш сразу (exit != 0) = missing DLL / ошибка импорта / падение при старте.
+      # Всё ещё работает после 5с = GUI OK.
       - name: Smoke test EXE (no crash on startup)
         shell: pwsh
         run: |
@@ -100,38 +100,33 @@ jobs:
           foreach ($p in $paths) { if (Test-Path $p) { $exe = (Resolve-Path $p).Path; break } }
           Write-Host "=== Smoke test: $exe ==="
 
-          # Запускаем с захватом stdout + stderr
-          $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-          $pinfo.FileName = $exe
-          $pinfo.RedirectStandardError = $true
-          $pinfo.RedirectStandardOutput = $true
-          $pinfo.UseShellExecute = $false
-          $pinfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-          $proc = New-Object System.Diagnostics.Process
-          $proc.StartInfo = $pinfo
+          $tmpOut = [System.IO.Path]::GetTempFileName()
+          $tmpErr = [System.IO.Path]::GetTempFileName()
 
-          # Буферы для асинхронного чтения вывода
-          $outLines = [System.Collections.Generic.List[string]]::new()
-          $errLines = [System.Collections.Generic.List[string]]::new()
-          $proc.add_OutputDataReceived({ param($s,$e) if ($e.Data) { $outLines.Add($e.Data) } })
-          $proc.add_ErrorDataReceived({ param($s,$e) if ($e.Data) { $errLines.Add($e.Data) } })
-
-          $proc.Start() | Out-Null
-          $proc.BeginOutputReadLine()
-          $proc.BeginErrorReadLine()
+          # Start-Process перенаправляет stdout/stderr в файлы — без Runspace-проблем
+          $proc = Start-Process -FilePath $exe `
+            -RedirectStandardOutput $tmpOut `
+            -RedirectStandardError $tmpErr `
+            -WindowStyle Hidden `
+            -PassThru
 
           # Ждём 5 секунд
           $exited = $proc.WaitForExit(5000)
 
-          # Печатаем первые 30 строк stdout и весь stderr — всегда
-          if ($outLines.Count -gt 0) {
+          # Читаем захваченный вывод из файлов
+          $outContent = Get-Content $tmpOut -ErrorAction SilentlyContinue | Select-Object -First 30
+          $errContent = Get-Content $tmpErr -ErrorAction SilentlyContinue
+
+          if ($outContent) {
             Write-Host "--- STDOUT (first 30 lines) ---"
-            $outLines | Select-Object -First 30 | ForEach-Object { Write-Host $_ }
+            $outContent | ForEach-Object { Write-Host $_ }
           }
-          if ($errLines.Count -gt 0) {
+          if ($errContent) {
             Write-Host "--- STDERR ---"
-            $errLines | ForEach-Object { Write-Host $_ }
+            $errContent | ForEach-Object { Write-Host $_ }
           }
+
+          Remove-Item $tmpOut, $tmpErr -ErrorAction SilentlyContinue
 
           if ($exited) {
             $code = $proc.ExitCode
@@ -141,7 +136,6 @@ jobs:
             }
             Write-Host "OK: EXE exited cleanly (code 0)"
           } else {
-            # GUI приложение продолжает работать — это нормально
             Write-Host "OK: EXE still running after 5s (GUI app healthy)"
             $proc.Kill()
             $proc.WaitForExit(2000) | Out-Null
