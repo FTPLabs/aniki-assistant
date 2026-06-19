@@ -37,16 +37,16 @@ name: Build Windows EXE
           uses: actions/cache@v4
           with:
             path: aniki_assistant/dist
-            key: ${{ runner.os }}-dist-v11-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
+            key: ${{ runner.os }}-dist-v12-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
 
         - name: Cache PyInstaller analysis
           if: steps.cache-dist.outputs.cache-hit != 'true'
           uses: actions/cache@v4
           with:
             path: aniki_assistant/build
-            key: ${{ runner.os }}-pyinstaller-v11-${{ hashFiles('aniki_assistant/aniki.spec') }}
+            key: ${{ runner.os }}-pyinstaller-v12-${{ hashFiles('aniki_assistant/aniki.spec') }}
             restore-keys: |
-              ${{ runner.os }}-pyinstaller-v11-
+              ${{ runner.os }}-pyinstaller-v12-
 
         - name: Install build tools
           run: |
@@ -60,7 +60,7 @@ name: Build Windows EXE
             pip install "faster-whisper>=1.0.0" pyttsx3 pygame "Pillow>=10.0.0"
             pip install pycaw comtypes pywin32 webrtcvad-wheels pyaudio
 
-        - name: Syntax check — ВСЕ Python-файлы (включая ui/)
+        - name: Syntax check all Python files
           working-directory: aniki_assistant
           shell: python
           run: |
@@ -75,15 +75,15 @@ name: Build Windows EXE
                 print(f"ERR {f}: {e}")
                 failed.append(f)
             if failed:
-              print(f"\nFAILED SYNTAX IN: {failed}")
+              print(f"\nFAILED: {failed}")
               sys.exit(1)
-            print(f"\nВсе {len(files)} файлов прошли синтаксическую проверку")
+            print(f"\nAll {len(files)} files OK")
 
-        - name: Import test — core + ui (все модули main.py)
+        - name: Import test core + ui
           working-directory: aniki_assistant
           shell: python
           run: |
-            import sys, os
+            import sys
             sys.path.insert(0, ".")
             mods = [
               "core", "core.personality", "core.ai_engine", "core.memory",
@@ -101,14 +101,13 @@ name: Build Windows EXE
                 print(f"SYNTAX   {m}: {e}")
                 failed.append(m)
               except ImportError as e:
-                # ImportError на внешних зависимостях (torch, PyQt6) — не блокирует
                 print(f"OK(deps) {m}: {e}")
               except Exception as e:
                 print(f"OK(other) {m}: {e}")
             if failed:
-              print(f"\nFAILED SYNTAX IN: {failed}")
+              print(f"\nFAILED: {failed}")
               sys.exit(1)
-            print(f"\nВсе {len(mods)} модулей прошли проверку синтаксиса")
+            print(f"\nAll {len(mods)} modules OK")
 
         - name: Download Billy audio clips
           working-directory: aniki_assistant
@@ -131,25 +130,17 @@ name: Build Windows EXE
               fname = f"{name}.mp3"
               fpath = os.path.join(dest, fname)
               if os.path.exists(fpath) and os.path.getsize(fpath) > 1000:
-                print(f"SKIP {fname}")
-                ok += 1
-                continue
-              url = f"{BASE}/{fname}"
+                print(f"SKIP {fname}"); ok += 1; continue
               try:
-                urllib.request.urlretrieve(url, fpath)
+                urllib.request.urlretrieve(f"{BASE}/{fname}", fpath)
                 size = os.path.getsize(fpath)
                 if size < 1000:
-                  os.remove(fpath)
-                  raise ValueError(f"too small: {size}b")
-                print(f"OK {fname} ({size//1024}KB)")
-                ok += 1
+                  os.remove(fpath); raise ValueError(f"too small: {size}b")
+                print(f"OK {fname} ({size//1024}KB)"); ok += 1
               except Exception as e:
-                print(f"FAIL {fname}: {e}")
-                fail += 1
+                print(f"FAIL {fname}: {e}"); fail += 1
               time.sleep(0.3)
             print(f"=== Audio: {ok} OK, {fail} FAIL ===")
-            if fail > ok:
-              print("WARNING: most clips failed, TTS will use pyttsx3 fallback")
 
         - name: Create app icon
           working-directory: aniki_assistant
@@ -189,7 +180,7 @@ name: Build Windows EXE
             $proc = Start-Process -FilePath $exe -WindowStyle Hidden -PassThru
             $exited = $proc.WaitForExit(10000)
             if ($exited) {
-              if ($proc.ExitCode -ne 0) { Write-Error "FAILED: exit $($proc.ExitCode)"; exit 1 }
+              if ($proc.ExitCode -ne 0) { Write-Error "FAILED exit $($proc.ExitCode)"; exit 1 }
               Write-Host "OK: EXE exited cleanly"
             } else {
               Write-Host "OK: EXE running after 10s (GUI healthy)"
@@ -219,19 +210,9 @@ name: Build Windows EXE
             files: Aniki-Windows.zip
             generate_release_notes: false
             body: |
-              ## Аники ${{ github.ref_name }}
-
-              ### Исправлено
-              - [CRITICAL] ui/chat_window.py — IndentationError исправлен
-              - [CRITICAL] ui/avatar_overlay.py — IndentationError исправлен
-              - [CRITICAL] core/tts.py — добавлены preload() и download_all_clips()
-              - [CRITICAL] auto_setup.py — IndentationError исправлен
-              - CI теперь тестирует ВСЕ модули включая ui.*
-
+              ## Aniki ${{ github.ref_name }}
               ### Установка
-              1. Установи [Ollama](https://ollama.com)
+              1. Установи Ollama: https://ollama.com
               2. В cmd: `ollama run qwen2.5:7b`
-              3. Распакуй архив, запусти `Aniki.exe`
-
-              > Требования: Windows 10/11 x64, 8 GB RAM.
+              3. Распакуй архив, запусти Aniki.exe
   
