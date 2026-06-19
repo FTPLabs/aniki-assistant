@@ -1,218 +1,217 @@
 name: Build Windows EXE
 
-  on:
-    push:
-      branches: [main]
-      tags: ['v*']
-    workflow_dispatch:
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
 
-  permissions:
-    contents: write
+permissions:
+  contents: write
 
-  jobs:
-    build:
-      runs-on: windows-latest
-      timeout-minutes: 120
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
 
-      steps:
-        - name: Checkout repo
-          uses: actions/checkout@v4
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-        - name: Set up Python 3.11
-          uses: actions/setup-python@v5
-          with:
-            python-version: "3.11"
-            cache: "pip"
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
 
-        - name: Cache pip packages
-          uses: actions/cache@v4
-          with:
-            path: ~\AppData\Local\pip\Cache
-            key: ${{ runner.os }}-pip-v9-${{ hashFiles('aniki_assistant/requirements.txt') }}
-            restore-keys: |
-              ${{ runner.os }}-pip-v9-
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-v9-${{ hashFiles('aniki_assistant/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-v9-
 
-        - name: Cache PyInstaller dist
-          id: cache-dist
-          uses: actions/cache@v4
-          with:
-            path: aniki_assistant/dist
-            key: ${{ runner.os }}-dist-v12-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
+      - name: Cache PyInstaller dist
+        id: cache-dist
+        uses: actions/cache@v4
+        with:
+          path: aniki_assistant/dist
+          key: ${{ runner.os }}-dist-v13-${{ hashFiles('aniki_assistant/aniki.spec', 'aniki_assistant/requirements.txt', 'aniki_assistant/**/*.py') }}
 
-        - name: Cache PyInstaller analysis
-          if: steps.cache-dist.outputs.cache-hit != 'true'
-          uses: actions/cache@v4
-          with:
-            path: aniki_assistant/build
-            key: ${{ runner.os }}-pyinstaller-v12-${{ hashFiles('aniki_assistant/aniki.spec') }}
-            restore-keys: |
-              ${{ runner.os }}-pyinstaller-v12-
+      - name: Cache PyInstaller analysis
+        if: steps.cache-dist.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: aniki_assistant/build
+          key: ${{ runner.os }}-pyinstaller-v13-${{ hashFiles('aniki_assistant/aniki.spec') }}
+          restore-keys: |
+            ${{ runner.os }}-pyinstaller-v13-
 
-        - name: Install build tools
-          run: |
-            python -m pip install --upgrade pip
-            pip install "pyinstaller==6.4.0"
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pyinstaller==6.4.0"
 
-        - name: Install runtime deps (CPU torch)
-          run: |
-            pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-            pip install "PyQt6>=6.6.0" requests numpy psutil sounddevice soundfile
-            pip install "faster-whisper>=1.0.0" pyttsx3 pygame "Pillow>=10.0.0"
-            pip install pycaw comtypes pywin32 webrtcvad-wheels pyaudio
+      - name: Install runtime deps
+        run: |
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install "PyQt6>=6.6.0" requests numpy psutil sounddevice soundfile
+          pip install "faster-whisper>=1.0.0" pyttsx3 pygame "Pillow>=10.0.0"
+          pip install pycaw comtypes pywin32 webrtcvad-wheels pyaudio
 
-        - name: Syntax check all Python files
-          working-directory: aniki_assistant
-          shell: python
-          run: |
-            import py_compile, sys, glob
-            files = sorted(glob.glob("**/*.py", recursive=True))
-            failed = []
-            for f in files:
-              try:
-                py_compile.compile(f, doraise=True)
-                print(f"OK  {f}")
-              except py_compile.PyCompileError as e:
-                print(f"ERR {f}: {e}")
-                failed.append(f)
-            if failed:
-              print(f"\nFAILED: {failed}")
-              sys.exit(1)
-            print(f"\nAll {len(files)} files OK")
+      - name: Syntax check all Python files
+        working-directory: aniki_assistant
+        shell: python
+        run: |
+          import py_compile, sys, glob
+          files = sorted(glob.glob("**/*.py", recursive=True))
+          failed = []
+          for f in files:
+            try:
+              py_compile.compile(f, doraise=True)
+              print(f"OK  {f}")
+            except py_compile.PyCompileError as e:
+              print(f"ERR {f}: {e}")
+              failed.append(f)
+          if failed:
+            print(f"\nFAILED: {failed}")
+            sys.exit(1)
+          print(f"\nAll {len(files)} files passed syntax check")
 
-        - name: Import test core + ui
-          working-directory: aniki_assistant
-          shell: python
-          run: |
-            import sys
-            sys.path.insert(0, ".")
-            mods = [
-              "core", "core.personality", "core.ai_engine", "core.memory",
-              "core.reminders", "core.commands", "core.learning", "core.search",
-              "core.tts", "core.speech",
-              "ui", "ui.chat_window", "ui.tray", "ui.avatar_overlay",
-              "auto_setup", "ollama_setup",
-            ]
-            failed = []
-            for m in mods:
-              try:
-                __import__(m)
-                print(f"OK       {m}")
-              except SyntaxError as e:
-                print(f"SYNTAX   {m}: {e}")
-                failed.append(m)
-              except ImportError as e:
-                print(f"OK(deps) {m}: {e}")
-              except Exception as e:
-                print(f"OK(other) {m}: {e}")
-            if failed:
-              print(f"\nFAILED: {failed}")
-              sys.exit(1)
-            print(f"\nAll {len(mods)} modules OK")
+      - name: Import test core and ui modules
+        working-directory: aniki_assistant
+        shell: python
+        run: |
+          import sys
+          sys.path.insert(0, ".")
+          mods = [
+            "core", "core.personality", "core.ai_engine", "core.memory",
+            "core.reminders", "core.commands", "core.learning", "core.search",
+            "core.tts", "core.speech",
+            "ui", "ui.chat_window", "ui.tray", "ui.avatar_overlay",
+            "auto_setup", "ollama_setup",
+          ]
+          failed = []
+          for m in mods:
+            try:
+              __import__(m)
+              print(f"OK       {m}")
+            except SyntaxError as e:
+              print(f"SYNTAX   {m}: {e}")
+              failed.append(m)
+            except ImportError as e:
+              print(f"OK(deps) {m}: {e}")
+            except Exception as e:
+              print(f"OK(other) {m}: {e}")
+          if failed:
+            print(f"\nFAILED: {failed}")
+            sys.exit(1)
+          print(f"\nAll {len(mods)} modules passed")
 
-        - name: Download Billy audio clips
-          working-directory: aniki_assistant
-          shell: python
-          run: |
-            import os, urllib.request, time
-            dest = os.path.join("data", "voice")
-            os.makedirs(dest, exist_ok=True)
-            BASE = "https://archive.org/download/billy-herrington-voice-pack"
-            clips = [
-              "are_you_ready", "lets_go", "no_pain_no_gain", "yeah_buddy",
-              "come_on", "right_here_right_now", "good_job", "oh_my_god",
-              "incredible", "thats_right", "nice", "oh_yeah", "take_it_easy",
-              "do_it", "dont_stop", "hell_yeah", "wow", "beautiful",
-              "unbelievable", "work_it", "push_it", "i_like_it", "feel_the_burn",
-              "im_your_man", "mans_world", "wrestle_with_the_best",
-            ]
-            ok = fail = 0
-            for name in clips:
-              fname = f"{name}.mp3"
-              fpath = os.path.join(dest, fname)
-              if os.path.exists(fpath) and os.path.getsize(fpath) > 1000:
-                print(f"SKIP {fname}"); ok += 1; continue
-              try:
-                urllib.request.urlretrieve(f"{BASE}/{fname}", fpath)
-                size = os.path.getsize(fpath)
-                if size < 1000:
-                  os.remove(fpath); raise ValueError(f"too small: {size}b")
-                print(f"OK {fname} ({size//1024}KB)"); ok += 1
-              except Exception as e:
-                print(f"FAIL {fname}: {e}"); fail += 1
-              time.sleep(0.3)
-            print(f"=== Audio: {ok} OK, {fail} FAIL ===")
+      - name: Download Billy audio clips
+        working-directory: aniki_assistant
+        shell: python
+        run: |
+          import os, urllib.request, time
+          dest = os.path.join("data", "voice")
+          os.makedirs(dest, exist_ok=True)
+          BASE = "https://archive.org/download/billy-herrington-voice-pack"
+          clips = [
+            "are_you_ready", "lets_go", "no_pain_no_gain", "yeah_buddy",
+            "come_on", "right_here_right_now", "good_job", "oh_my_god",
+            "incredible", "thats_right", "nice", "oh_yeah", "take_it_easy",
+            "do_it", "dont_stop", "hell_yeah", "wow", "beautiful",
+            "unbelievable", "work_it", "push_it", "i_like_it", "feel_the_burn",
+            "im_your_man", "mans_world", "wrestle_with_the_best",
+          ]
+          ok = fail = 0
+          for name in clips:
+            fname = f"{name}.mp3"
+            fpath = os.path.join(dest, fname)
+            if os.path.exists(fpath) and os.path.getsize(fpath) > 1000:
+              print(f"SKIP {fname}"); ok += 1; continue
+            try:
+              urllib.request.urlretrieve(f"{BASE}/{fname}", fpath)
+              size = os.path.getsize(fpath)
+              if size < 1000:
+                os.remove(fpath); raise ValueError(f"too small: {size}b")
+              print(f"OK {fname} ({size//1024}KB)"); ok += 1
+            except Exception as e:
+              print(f"FAIL {fname}: {e}"); fail += 1
+            time.sleep(0.3)
+          print(f"Audio: {ok} OK, {fail} FAIL")
 
-        - name: Create app icon
-          working-directory: aniki_assistant
-          run: python create_icon_ci.py
+      - name: Create app icon
+        working-directory: aniki_assistant
+        run: python create_icon_ci.py
 
-        - name: Bundle with PyInstaller
-          if: steps.cache-dist.outputs.cache-hit != 'true'
-          working-directory: aniki_assistant
-          run: pyinstaller aniki.spec --noconfirm
-          shell: cmd
+      - name: Bundle with PyInstaller
+        if: steps.cache-dist.outputs.cache-hit != 'true'
+        working-directory: aniki_assistant
+        run: pyinstaller aniki.spec --noconfirm
+        shell: cmd
 
-        - name: Skip build notice
-          if: steps.cache-dist.outputs.cache-hit == 'true'
-          run: echo "cache-hit - PyInstaller skipped"
+      - name: Skip build (cache hit)
+        if: steps.cache-dist.outputs.cache-hit == 'true'
+        run: echo "cache-hit - PyInstaller skipped"
 
-        - name: Verify EXE exists
-          shell: pwsh
-          run: |
-            $paths = @("aniki_assistant/dist/Aniki/Aniki.exe", "aniki_assistant/dist/Aniki.exe")
-            $found = $false
-            foreach ($p in $paths) {
-              if (Test-Path $p) {
-                $size = [math]::Round((Get-Item $p).Length / 1MB, 1)
-                Write-Host "OK Aniki.exe: $size MB"
-                $found = $true; break
-              }
+      - name: Verify EXE exists
+        shell: pwsh
+        run: |
+          $paths = @("aniki_assistant/dist/Aniki/Aniki.exe", "aniki_assistant/dist/Aniki.exe")
+          $found = $false
+          foreach ($p in $paths) {
+            if (Test-Path $p) {
+              $size = [math]::Round((Get-Item $p).Length / 1MB, 1)
+              Write-Host "OK Aniki.exe: $size MB"
+              $found = $true; break
             }
-            if (-not $found) { Write-Error "Aniki.exe not found!"; exit 1 }
+          }
+          if (-not $found) { Write-Error "Aniki.exe not found!"; exit 1 }
 
-        - name: Smoke test EXE
-          shell: pwsh
-          run: |
-            $paths = @("aniki_assistant/dist/Aniki/Aniki.exe", "aniki_assistant/dist/Aniki.exe")
-            $exe = $null
-            foreach ($p in $paths) { if (Test-Path $p) { $exe = (Resolve-Path $p).Path; break } }
-            Write-Host "Smoke test: $exe"
-            $proc = Start-Process -FilePath $exe -WindowStyle Hidden -PassThru
-            $exited = $proc.WaitForExit(10000)
-            if ($exited) {
-              if ($proc.ExitCode -ne 0) { Write-Error "FAILED exit $($proc.ExitCode)"; exit 1 }
-              Write-Host "OK: EXE exited cleanly"
-            } else {
-              Write-Host "OK: EXE running after 10s (GUI healthy)"
-              $proc.Kill()
-            }
+      - name: Smoke test EXE
+        shell: pwsh
+        run: |
+          $paths = @("aniki_assistant/dist/Aniki/Aniki.exe", "aniki_assistant/dist/Aniki.exe")
+          $exe = $null
+          foreach ($p in $paths) { if (Test-Path $p) { $exe = (Resolve-Path $p).Path; break } }
+          Write-Host "Smoke test: $exe"
+          $proc = Start-Process -FilePath $exe -WindowStyle Hidden -PassThru
+          $exited = $proc.WaitForExit(10000)
+          if ($exited) {
+            if ($proc.ExitCode -ne 0) { Write-Error "FAILED exit $($proc.ExitCode)"; exit 1 }
+            Write-Host "OK: EXE exited cleanly"
+          } else {
+            Write-Host "OK: EXE running after 10s (GUI healthy)"
+            $proc.Kill()
+          }
 
-        - name: Zip release bundle
-          shell: pwsh
-          run: |
-            if (Test-Path "aniki_assistant/dist/Aniki") {
-              Compress-Archive -Path "aniki_assistant/dist/Aniki/*" -DestinationPath "Aniki-Windows.zip"
-            } else {
-              Compress-Archive -Path "aniki_assistant/dist/Aniki.exe" -DestinationPath "Aniki-Windows.zip"
-            }
+      - name: Zip release bundle
+        shell: pwsh
+        run: |
+          if (Test-Path "aniki_assistant/dist/Aniki") {
+            Compress-Archive -Path "aniki_assistant/dist/Aniki/*" -DestinationPath "Aniki-Windows.zip"
+          } else {
+            Compress-Archive -Path "aniki_assistant/dist/Aniki.exe" -DestinationPath "Aniki-Windows.zip"
+          }
 
-        - name: Upload artifact
-          uses: actions/upload-artifact@v4
-          with:
-            name: Aniki-Windows-${{ github.sha }}
-            path: Aniki-Windows.zip
-            retention-days: 30
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aniki-Windows-${{ github.sha }}
+          path: Aniki-Windows.zip
+          retention-days: 30
 
-        - name: Create GitHub Release (on tag)
-          if: startsWith(github.ref, 'refs/tags/v')
-          uses: softprops/action-gh-release@v2
-          with:
-            files: Aniki-Windows.zip
-            generate_release_notes: false
-            body: |
-              ## Aniki ${{ github.ref_name }}
-              ### Установка
-              1. Установи Ollama: https://ollama.com
-              2. В cmd: `ollama run qwen2.5:7b`
-              3. Распакуй архив, запусти Aniki.exe
-  
+      - name: Create GitHub Release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Aniki-Windows.zip
+          generate_release_notes: false
+          body: |
+            ## Aniki ${{ github.ref_name }}
+            ### Installation
+            1. Install Ollama: https://ollama.com
+            2. Run: ollama run qwen2.5:7b
+            3. Unpack archive and launch Aniki.exe
