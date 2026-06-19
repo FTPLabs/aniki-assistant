@@ -1,23 +1,20 @@
 """
-Аники v2.3 — точка входа.
-FIX: multiprocessing.freeze_support() — без этого PyInstaller на Windows
-     порождает бесконечные дочерние процессы (torch использует multiprocessing).
+Аники v3.0 — точка входа. Are you ready?
 """
-import multiprocessing
-multiprocessing.freeze_support()   # ← ДОЛЖЕН быть ДО любого другого импорта
 
 import sys
 import os
-import logging
 import threading
+import logging
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(name)s] %(levelname)s — %(message)s",
     handlers=[
         logging.FileHandler(
             os.path.join(os.path.dirname(__file__), "data", "aniki.log"),
             encoding="utf-8",
+            delay=True,
         ),
         logging.StreamHandler(sys.stdout),
     ],
@@ -28,8 +25,7 @@ os.makedirs(os.path.join(os.path.dirname(__file__), "data"), exist_ok=True)
 
 def main():
     # ── Шаг 1: авто-установка зависимостей ───────────────────────────────────
-    # В frozen exe (PyInstaller) пропускаем — пакеты уже встроены
-    if not getattr(sys, 'frozen', False):
+    if not getattr(sys, "frozen", False):
         try:
             import auto_setup
             auto_setup.run(progress_cb=lambda msg: print(f"  {msg}"))
@@ -38,7 +34,6 @@ def main():
         except Exception as e:
             print(f"auto_setup: {e}")
     else:
-        # В exe: только проверяем автозапуск ollama (без pip)
         try:
             import auto_setup
             auto_setup.ensure_ollama_autostart()
@@ -66,7 +61,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Аники")
-    app.setApplicationVersion("2.3.0")
+    app.setApplicationVersion("3.0.0")
 
     # Сплэш
     pix = QPixmap(440, 230)
@@ -76,7 +71,7 @@ def main():
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setGeometry(0, 0, 440, 230)
     lbl.setStyleSheet("color:#ff9e44;font-size:24px;font-weight:bold;font-family:'Segoe UI';")
-    lbl.setText("АНИКИ v2.3\nAre you ready?\nЗагружаюсь...")
+    lbl.setText("АНИКИ v3.0\nAre you ready?\nЗагружаюсь...")
     splash.show()
     app.processEvents()
 
@@ -88,7 +83,7 @@ def main():
         )
         app.processEvents()
 
-    logger.info("Аники v2.3 запускается...")
+    logger.info("Аники v3.0 запускается... Let's go!")
 
     splash_msg("Инициализация памяти...")
     from core.memory import init_db
@@ -108,17 +103,17 @@ def main():
     if not ollama_ok:
         logger.warning("Ollama не запущен — ИИ недоступен")
 
-    splash_msg("Загрузка голоса Billie (aidar)...")
+    splash_msg("Загрузка голоса Билли...")
     from core.tts import preload as tts_preload
     threading.Thread(target=tts_preload, daemon=True).start()
 
-    splash_msg("Загрузка Whisper STT...")
+    splash_msg("Проверка микрофона...")
     from core.speech import load_whisper_model, is_available as stt_ok
     stt_available = stt_ok()
     if stt_available:
         threading.Thread(target=load_whisper_model, daemon=True).start()
     else:
-        logger.warning("STT недоступен — VAD отключён")
+        logger.warning("STT недоступен — только текстовый режим")
 
     splash_msg("Запуск интерфейса...")
     from ui.chat_window import ChatWindow
@@ -128,7 +123,7 @@ def main():
         if chat_window:
             chat_window.show_reminder_notification(title, message)
         if tray_app and tray_app.tray_icon:
-            tray_app.show_notification(f"⏰ {title}", message)
+            tray_app.show_notification(f"Аники: {title}", message)
 
     reminder_system = ReminderSystem(on_reminder=on_reminder)
     reminder_system.start()
@@ -162,16 +157,11 @@ def main():
                 chat_window.activateWindow()
 
         avatar_overlay.toggle_main.connect(_toggle_chat)
-        logger.info("Аватар Билли запущен")
     except Exception as e:
         logger.warning(f"Аватар недоступен: {e}")
 
     from ui.tray import TrayApp
     tray_app = TrayApp(chat_window=chat_window)
-
-    from PyQt6.QtWidgets import QSystemTrayIcon
-    if not QSystemTrayIcon.isSystemTrayAvailable():
-        logger.warning("Системный трей недоступен")
 
     app.setQuitOnLastWindowClosed(False)
 
@@ -199,20 +189,22 @@ def main():
 
     QTimer.singleShot(1800, splash.close)
 
+    # ── Приветственные сообщения — живые, не роботские ───────────────────────
     if not ollama_ok:
         QTimer.singleShot(2200, lambda: chat_window.add_bot_message(
-            "Бро, Ollama не запущен!\n\n"
-            "1. Установи Ollama: https://ollama.com\n"
-            "2. В cmd: ollama run mistral\n"
-            "3. Перезапусти Аники\n\nLet's go — всё будет работать!"
-        ))
-    if not stt_available:
-        QTimer.singleShot(2500, lambda: chat_window.add_bot_message(
-            "VAD недоступен (faster-whisper не установлен).\n"
-            "Голосовое управление отключено — пиши текстом."
+            "Бро, запусти Ollama — без него я как без мозга!\n\n"
+            "1. Скачай: https://ollama.com\n"
+            "2. В терминале: ollama run mistral\n"
+            "3. Перезапусти меня\n\nLet's go — всё будет работать!"
         ))
 
-    logger.info("Аники v2.3 запущен! Are you ready?")
+    if not stt_available:
+        QTimer.singleShot(2500, lambda: chat_window.add_bot_message(
+            "Микрофон недоступен — пиши мне текстом, бро!\n"
+            "Работаю в текстовом режиме. Are you ready?"
+        ))
+
+    logger.info("Аники v3.0 запущен! Are you ready?")
     sys.exit(tray_app.run())
 
 
