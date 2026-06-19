@@ -1,7 +1,10 @@
 """
-VAD + STT для Аники.
-Постоянно слушает микрофон, обнаруживает голос, отправляет в Whisper.
-Поддерживает webrtcvad (точный) или amplitude (запасной).
+VAD + STT для Аники v2.3 — Whisper + GPU/CPU автодетект + VAD.
+
+FIX: is_available() логирует ПРИЧИНУ отказа — теперь видно что именно не найдено.
+FIX: webrtcvad-wheels вместо webrtcvad для Windows.
+NEW: GPU автодетект (cuda→int8_float16 / cpu→int8).
+NEW: Whisper "base" по умолчанию (лучше качество, всё ещё быстро).
 """
 
 import os
@@ -15,20 +18,31 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-_whisper_model = None
+_whisper_model  = None
 _whisper_loaded = False
 _whisper_lock   = threading.Lock()
 
-WHISPER_MODEL_SIZE = "small"
+WHISPER_MODEL_SIZE = os.environ.get("ANIKI_WHISPER_MODEL", "base")
 WHISPER_MODELS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "models", "whisper"
 )
 
-# Порог тишины (RMS) — подстрой под своё железо
-SILENCE_THRESHOLD = 0.008
-SILENCE_DURATION  = 1.2    # секунд тишины = конец фразы
+SILENCE_THRESHOLD = 0.006
+SILENCE_DURATION  = 1.0
 SAMPLE_RATE       = 16000
-FRAME_DURATION_MS = 30     # для webrtcvad: 10, 20 или 30
+FRAME_DURATION_MS = 30
+
+
+def _get_device_and_compute():
+    """Автодетект: cuda если доступно, иначе cpu."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            logger.info("GPU (CUDA) обнаружен — используем float16")
+            return "cuda", "float16"
+    except Exception:
+        pass
+    return "cpu", "int8"
 
 
 def load_whisper_model(model_size: str = WHISPER_MODEL_SIZE) -> bool:
@@ -39,27 +53,27 @@ def load_whisper_model(model_size: str = WHISPER_MODEL_SIZE) -> bool:
         try:
             from faster_whisper import WhisperModel
             os.makedirs(WHISPER_MODELS_DIR, exist_ok=True)
-            logger.info(f"Загружаю Whisper '{model_size}'...")
+            device, compute = _get_device_and_compute()
+            logger.info(f"Загружаю Whisper '{model_size}' [{device}/{compute}]...")
             _whisper_model = WhisperModel(
                 model_size,
-                device="cpu",
-                compute_type="int8",
+                device=device,
+                compute_type=compute,
                 download_root=WHISPER_MODELS_DIR,
             )
             _whisper_loaded = True
-            logger.info("Whisper загружен")
+            logger.info(f"Whisper '{model_size}' загружен на {device}")
             return True
-        except ImportError:
-            logger.error("faster-whisper не установлен")
+        except ImportError as e:
+            logger.error(f"faster-whisper не установлен: {e}")
             return False
         except Exception as e:
-            logger.error(f"Ошибка Whisper: {e}")
+            logger.error(f"Ошибка загрузки Whisper: {e}")
             return False
 
 
 def transcribe_audio_bytes(audio_bytes: bytes,
                            sample_rate: int = SAMPLE_RATE) -> Optional[str]:
-    """Транскрибировать аудио в текст."""
     if not _whisper_loaded:
         if not load_whisper_model():
             return None
@@ -73,7 +87,7 @@ def transcribe_audio_bytes(audio_bytes: bytes,
             wf.writeframes(audio_bytes)
         segments, info = _whisper_model.transcribe(
             tmp,
-            language=None,       # автоопределение ru/en
+            language=None,
             task="transcribe",
             beam_size=5,
             best_of=5,
@@ -95,18 +109,16 @@ def transcribe_audio_bytes(audio_bytes: bytes,
 
 
 def transcribe_audio_file(path: str) -> Optional[str]:
-    # FIX C1: проверяем результат загрузки — _whisper_model может быть None
     if not _whisper_loaded:
         if not load_whisper_model():
-            logger.error('Whisper не загружен — transcribe_audio_file невозможен')
+            logger.error("Whisper не загружен")
             return None
     if _whisper_model is None:
         return None
     try:
-        segments, info = _whisper_model.transcribe(
+        segments, _ = _whisper_model.transcribe(
             path, language=None, task="transcribe",
-            beam_size=5, temperature=0.0,
-            vad_filter=True,
+            beam_size=5, temperature=0.0, vad_filter=True,
         )
         return " ".join(s.text for s in segments).strip() or None
     except Exception as e:
@@ -114,25 +126,23 @@ def transcribe_audio_file(path: str) -> Optional[str]:
         return None
 
 
-# ── VAD — определение речи ────────────────────────────────────────────────────
-
 def _try_webrtcvad():
-    """Попытаться импортировать webrtcvad."""
-    try:
-        import webrtcvad
-        return webrtcvad
-    except ImportError:
-        return None
+    """Пробуем webrtcvad-wheels (Windows) или webrtcvad."""
+    for pkg in ("webrtcvad_wheels", "webrtcvad"):
+        try:
+            mod = __import__(pkg)
+            logger.info(f"WebRTC VAD загружен из: {pkg}")
+            return mod
+        except ImportError:
+            pass
+    logger.debug("webrtcvad не найден — используем амплитудный VAD")
+    return None
 
 
 class VoiceListener:
     """
     Постоянно слушает микрофон.
     При обнаружении речи записывает, транскрибирует, вызывает callback(text).
-
-    Поддерживает будильник-слово: если задан wake_word, реагирует только
-    когда пользователь сказал его (например, "аники").
-    Без wake_word — реагирует на всё.
     """
 
     def __init__(
@@ -144,22 +154,18 @@ class VoiceListener:
         sample_rate:       int   = SAMPLE_RATE,
         on_listening_change: Optional[Callable[[bool], None]] = None,
     ):
-        self.callback           = callback
-        self.wake_word          = wake_word.lower() if wake_word else None
-        self.silence_threshold  = silence_threshold
-        self.silence_duration   = silence_duration
-        self.sample_rate        = sample_rate
+        self.callback            = callback
+        self.wake_word           = wake_word.lower() if wake_word else None
+        self.silence_threshold   = silence_threshold
+        self.silence_duration    = silence_duration
+        self.sample_rate         = sample_rate
         self.on_listening_change = on_listening_change
 
         self._running         = False
         self._thread: Optional[threading.Thread] = None
         self._audio_q: queue.Queue = queue.Queue()
         self._webrtcvad       = _try_webrtcvad()
-
-        # Режим активного слушания (если wake_word задан и произнесён)
         self._active_listening = (wake_word is None)
-
-    # ── Public API ─────────────────────────────────────────────────────────────
 
     def start(self):
         if self._running:
@@ -181,28 +187,33 @@ class VoiceListener:
     def is_running(self) -> bool:
         return self._running
 
-    # ── Внутренний цикл ────────────────────────────────────────────────────────
-
     def _listen_loop(self):
         try:
             import sounddevice as sd
             import numpy as np
-        except ImportError:
-            logger.error("sounddevice / numpy не установлены")
+        except ImportError as e:
+            logger.error(f"sounddevice/numpy не установлены: {e}")
+            return
+
+        # Список аудиоустройств
+        try:
+            devices = sd.query_devices()
+            logger.info(f"Аудиоустройства: {len(devices)} найдено")
+        except Exception as e:
+            logger.error(f"Нет аудиоустройств: {e}")
             return
 
         frame_size   = int(self.sample_rate * FRAME_DURATION_MS / 1000)
         silence_need = int(self.silence_duration / (FRAME_DURATION_MS / 1000))
-        min_frames   = 8    # минимум фреймов для обработки (~240 мс)
+        min_frames   = 8
 
-        # Инициализация webrtcvad если доступен
         vad = None
         if self._webrtcvad:
             try:
-                vad = self._webrtcvad.Vad(2)   # агрессивность 0-3
-                logger.info("WebRTC VAD активен")
-            except Exception:
-                vad = None
+                vad = self._webrtcvad.Vad(2)
+                logger.info("WebRTC VAD активен (агрессивность 2)")
+            except Exception as e:
+                logger.warning(f"WebRTC VAD инициализация: {e}")
 
         audio_buf    = []
         silence_cnt  = 0
@@ -219,7 +230,7 @@ class VoiceListener:
                 blocksize=frame_size,
                 callback=audio_cb,
             ):
-                logger.info("Микрофон открыт, жду речь...")
+                logger.info("Микрофон открыт ✓")
                 while self._running:
                     try:
                         chunk = self._audio_q.get(timeout=0.5)
@@ -227,9 +238,7 @@ class VoiceListener:
                         continue
 
                     chunk_flat = chunk.flatten()
-
-                    # Определяем наличие речи
-                    is_speech = self._detect_speech(chunk_flat, vad, frame_size)
+                    is_speech  = self._detect_speech(chunk_flat, vad, frame_size)
 
                     if is_speech:
                         if not is_recording:
@@ -245,14 +254,12 @@ class VoiceListener:
                         silence_cnt += 1
                         if silence_cnt >= silence_need:
                             if len(audio_buf) >= min_frames:
-                                # Обрабатываем в фоне, не блокируя VAD
                                 buf_copy = list(audio_buf)
-                                t = threading.Thread(
+                                threading.Thread(
                                     target=self._process,
                                     args=(buf_copy,),
                                     daemon=True,
-                                )
-                                t.start()
+                                ).start()
                             if self.on_listening_change:
                                 self.on_listening_change(False)
                             is_recording = False
@@ -262,15 +269,10 @@ class VoiceListener:
             logger.error(f"Ошибка VAD цикла: {e}")
 
     def _detect_speech(self, chunk_int16, vad, frame_size: int) -> bool:
-        """Определить есть ли речь в чанке."""
         import numpy as np
-
-        # Амплитудный тест (быстрый)
         rms = float(np.sqrt(np.mean(chunk_int16.astype(np.float32) ** 2))) / 32768.0
         if rms < self.silence_threshold:
             return False
-
-        # WebRTC VAD (точный, если доступен)
         if vad is not None:
             try:
                 raw = chunk_int16[:frame_size].astype(np.int16).tobytes()
@@ -278,22 +280,18 @@ class VoiceListener:
                     return vad.is_speech(raw, self.sample_rate)
             except Exception:
                 pass
-
-        return True   # амплитуда прошла, webrtcvad недоступен
+        return True
 
     def _process(self, audio_frames):
-        """Транскрибировать и вызвать callback."""
         try:
             import numpy as np
-            audio = np.concatenate(audio_frames, axis=0)
+            audio      = np.concatenate(audio_frames, axis=0)
             audio_bytes = audio.astype(np.int16).tobytes()
-            text = transcribe_audio_bytes(audio_bytes, self.sample_rate)
+            text       = transcribe_audio_bytes(audio_bytes, self.sample_rate)
             if not text:
                 return
-
             text = text.strip()
             logger.info(f"Голос: '{text}'")
-
             if self.wake_word:
                 text_lower = text.lower()
                 if self.wake_word in text_lower:
@@ -301,28 +299,50 @@ class VoiceListener:
                     clean = text_lower.replace(self.wake_word, "").strip(" ,.-!")
                     if clean:
                         self.callback(clean)
-                    # Если произнесено только имя — просто активируемся (не отправляем пустой запрос)
                 elif self._active_listening:
                     self.callback(text)
-                    # Остаёмся в активном режиме — Аники помнит контекст
             else:
                 self.callback(text)
-
         except Exception as e:
             logger.error(f"Ошибка обработки аудио: {e}")
 
-
-# ── Совместимость — старый класс MicrophoneListener ──────────────────────────
 
 MicrophoneListener = VoiceListener
 
 
 def is_available() -> bool:
-    """Проверить доступность STT."""
+    """
+    Проверить доступность STT. Логирует ТОЧНУЮ причину если недоступно.
+    FIX: детальная диагностика вместо голого ImportError.
+    """
+    issues = []
+
     try:
         import faster_whisper
-        import sounddevice
-        import numpy
-        return True
     except ImportError:
+        issues.append("faster-whisper (pip install faster-whisper)")
+
+    try:
+        import sounddevice as sd
+        # Проверяем что аудиоустройства реально есть
+        devices = sd.query_devices()
+        if len(devices) == 0:
+            issues.append("нет аудиоустройств в системе")
+    except ImportError:
+        issues.append("sounddevice (pip install sounddevice)")
+    except Exception as e:
+        issues.append(f"sounddevice ошибка: {e}")
+
+    try:
+        import numpy
+    except ImportError:
+        issues.append("numpy (pip install numpy)")
+
+    if issues:
+        logger.warning("STT недоступен — причины:")
+        for issue in issues:
+            logger.warning(f"  • {issue}")
         return False
+
+    logger.info("STT готов (faster-whisper + sounddevice)")
+    return True
